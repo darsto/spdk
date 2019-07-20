@@ -49,7 +49,7 @@
 #include "spdk_internal/vhost_user.h"
 
 #ifndef SPDK_CONFIG_VHOST_INTERNAL_LIB
-extern const struct vhost_device_ops g_spdk_vhost_ops;
+extern const struct vhost_device_ops g_dpdk_vhost_ops;
 
 static enum rte_vhost_msg_result
 spdk_extern_vhost_pre_msg_handler(int vid, void *_msg)
@@ -57,7 +57,7 @@ spdk_extern_vhost_pre_msg_handler(int vid, void *_msg)
 	struct vhost_user_msg *msg = _msg;
 	struct spdk_vhost_session *vsession;
 
-	vsession = spdk_vhost_session_find_by_vid(vid);
+	vsession = vhost_session_find_by_vid(vid);
 	if (vsession == NULL) {
 		SPDK_ERRLOG("Received a message to unitialized session (vid %d).\n", vid);
 		assert(false);
@@ -70,7 +70,7 @@ spdk_extern_vhost_pre_msg_handler(int vid, void *_msg)
 			/* Our queue is stopped for whatever reason, but we may still
 			 * need to poll it after it's initialized again.
 			 */
-			g_spdk_vhost_ops.destroy_device(vid);
+			g_dpdk_vhost_ops.destroy_device(vid);
 		}
 		break;
 	case VHOST_USER_SET_VRING_BASE:
@@ -83,7 +83,7 @@ spdk_extern_vhost_pre_msg_handler(int vid, void *_msg)
 			 * we were never in SeaBIOS in the first place. Either way, we
 			 * don't need our workaround anymore.
 			 */
-			g_spdk_vhost_ops.destroy_device(vid);
+			g_dpdk_vhost_ops.destroy_device(vid);
 			vsession->forced_polling = false;
 		}
 		break;
@@ -106,7 +106,7 @@ spdk_extern_vhost_pre_msg_handler(int vid, void *_msg)
 		 * message handler.
 		 */
 		if (vsession->started) {
-			g_spdk_vhost_ops.destroy_device(vid);
+			g_dpdk_vhost_ops.destroy_device(vid);
 			vsession->needs_restart = true;
 		}
 		break;
@@ -151,7 +151,7 @@ spdk_extern_vhost_post_msg_handler(int vid, void *_msg)
 	struct vhost_user_msg *msg = _msg;
 	struct spdk_vhost_session *vsession;
 
-	vsession = spdk_vhost_session_find_by_vid(vid);
+	vsession = vhost_session_find_by_vid(vid);
 	if (vsession == NULL) {
 		SPDK_ERRLOG("Received a message to unitialized session (vid %d).\n", vid);
 		assert(false);
@@ -159,7 +159,7 @@ spdk_extern_vhost_post_msg_handler(int vid, void *_msg)
 	}
 
 	if (vsession->needs_restart) {
-		g_spdk_vhost_ops.new_device(vid);
+		g_dpdk_vhost_ops.new_device(vid);
 		vsession->needs_restart = false;
 		return RTE_VHOST_MSG_RESULT_NOT_HANDLED;
 	}
@@ -187,7 +187,7 @@ spdk_extern_vhost_post_msg_handler(int vid, void *_msg)
 		 * its SET_VRING_KICK message. Let's do it!
 		 */
 		if (vsession->forced_polling && !vsession->started) {
-			g_spdk_vhost_ops.new_device(vid);
+			g_dpdk_vhost_ops.new_device(vid);
 		}
 		break;
 	default:
@@ -197,17 +197,17 @@ spdk_extern_vhost_post_msg_handler(int vid, void *_msg)
 	return RTE_VHOST_MSG_RESULT_NOT_HANDLED;
 }
 
-struct rte_vhost_user_extern_ops g_spdk_extern_vhost_ops = {
+struct rte_vhost_user_extern_ops g_extern_vhost_ops = {
 	.pre_msg_handle = spdk_extern_vhost_pre_msg_handler,
 	.post_msg_handle = spdk_extern_vhost_post_msg_handler,
 };
 
 void
-spdk_vhost_session_install_rte_compat_hooks(struct spdk_vhost_session *vsession)
+vhost_session_install_rte_compat_hooks(struct spdk_vhost_session *vsession)
 {
 	int rc;
 
-	rc = rte_vhost_extern_callback_register(vsession->vid, &g_spdk_extern_vhost_ops, NULL);
+	rc = rte_vhost_extern_callback_register(vsession->vid, &g_extern_vhost_ops, NULL);
 	if (rc != 0) {
 		SPDK_ERRLOG("rte_vhost_extern_callback_register() failed for vid = %d\n",
 			    vsession->vid);
@@ -216,7 +216,7 @@ spdk_vhost_session_install_rte_compat_hooks(struct spdk_vhost_session *vsession)
 }
 
 void
-spdk_vhost_dev_install_rte_compat_hooks(struct spdk_vhost_dev *vdev)
+vhost_dev_install_rte_compat_hooks(struct spdk_vhost_dev *vdev)
 {
 	uint64_t protocol_features = 0;
 
@@ -227,13 +227,13 @@ spdk_vhost_dev_install_rte_compat_hooks(struct spdk_vhost_dev *vdev)
 
 #else /* SPDK_CONFIG_VHOST_INTERNAL_LIB */
 void
-spdk_vhost_session_install_rte_compat_hooks(struct spdk_vhost_session *vsession)
+vhost_session_install_rte_compat_hooks(struct spdk_vhost_session *vsession)
 {
 	/* nothing to do. all the changes are already incorporated into rte_vhost */
 }
 
 void
-spdk_vhost_dev_install_rte_compat_hooks(struct spdk_vhost_dev *vdev)
+vhost_dev_install_rte_compat_hooks(struct spdk_vhost_dev *vdev)
 {
 	/* nothing to do */
 }
