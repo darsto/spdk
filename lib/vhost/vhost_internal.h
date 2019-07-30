@@ -338,15 +338,11 @@ void vhost_dev_foreach_session(struct spdk_vhost_dev *dev,
  * \param vsession vhost session
  * \param cb_fn the function to call. The void *arg parameter in cb_fn
  * is always NULL.
- * \param timeout_sec timeout in seconds. This function will still
- * block after the timeout expires, but will print the provided errmsg.
- * \param errmsg error message to print once the timeout expires
- * \return return the code passed to spdk_vhost_session_event_done().
+ * \return always 0
  */
 int vhost_session_send_event(struct vhost_poll_group *pg,
 			     struct spdk_vhost_session *vsession,
-			     spdk_vhost_session_fn cb_fn, unsigned timeout_sec,
-			     const char *errmsg);
+			     spdk_vhost_session_fn cb_fn);
 
 /**
  * Finish a blocking spdk_vhost_session_send_event() call and finally

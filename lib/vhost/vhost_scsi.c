@@ -1356,7 +1356,7 @@ vhost_scsi_start(struct spdk_vhost_session *vsession)
 	}
 
 	return vhost_session_send_event(svdev->poll_group, vsession,
-					vhost_scsi_start_cb, 3, "start session");
+					vhost_scsi_start_cb);
 }
 
 static int
@@ -1443,7 +1443,7 @@ static int
 vhost_scsi_stop(struct spdk_vhost_session *vsession)
 {
 	return vhost_session_send_event(vsession->poll_group, vsession,
-					vhost_scsi_stop_cb, 3, "stop session");
+					vhost_scsi_stop_cb);
 }
 
 static void
