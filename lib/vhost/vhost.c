@@ -43,12 +43,6 @@
 
 #include "spdk_internal/memory.h"
 
-struct vhost_poll_group {
-	struct spdk_thread *thread;
-	unsigned ref;
-	TAILQ_ENTRY(vhost_poll_group) tailq;
-};
-
 static TAILQ_HEAD(, vhost_poll_group) g_poll_groups = TAILQ_HEAD_INITIALIZER(g_poll_groups);
 
 /* Temporary cpuset for poll group assignment */
