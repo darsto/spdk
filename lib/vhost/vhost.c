@@ -945,43 +945,6 @@ vhost_session_stop_done(struct spdk_vhost_session *vsession, int response)
 	sem_post(&g_dpdk_sem);
 }
 
-static void
-vhost_event_cb(void *arg1)
-{
-	struct vhost_session_fn_ctx *ctx = arg1;
-	struct spdk_vhost_session *vsession;
-
-	if (pthread_mutex_trylock(&g_vhost_mutex) != 0) {
-		spdk_thread_send_msg(spdk_get_thread(), vhost_event_cb, arg1);
-		return;
-	}
-
-	vsession = vhost_session_find_by_id(ctx->vdev, ctx->vsession_id);
-	ctx->cb_fn(ctx->vdev, vsession, NULL);
-	pthread_mutex_unlock(&g_vhost_mutex);
-
-	free(ctx);
-}
-
-int
-vhost_session_send_event(struct vhost_poll_group *pg,
-			 struct spdk_vhost_session *vsession,
-			 spdk_vhost_session_fn cb_fn)
-{
-	struct vhost_session_fn_ctx *ev_ctx;
-
-	ev_ctx = calloc(1, sizeof(*ev_ctx));
-	/* TODO */
-	assert(ev_ctx != NULL);
-
-	ev_ctx->vdev = vsession->vdev;
-	ev_ctx->vsession_id = vsession->id;
-	ev_ctx->cb_fn = cb_fn;
-
-	spdk_thread_send_msg(pg->thread, vhost_event_cb, ev_ctx);
-	return 0;
-}
-
 static void foreach_session_continue(struct vhost_session_fn_ctx *ev_ctx,
 				     struct spdk_vhost_session *vsession);
 

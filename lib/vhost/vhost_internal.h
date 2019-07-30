@@ -330,25 +330,6 @@ void vhost_dev_foreach_session(struct spdk_vhost_dev *dev,
 			       void *arg);
 
 /**
- * Call a function on the provided lcore and block until either
- * spdk_vhost_session_start_done() or spdk_vhost_session_stop_done()
- * is called.
- *
- * This must be called under the global vhost mutex, which this function
- * will unlock for the time it's waiting. It's meant to be called only
- * from start/stop session callbacks.
- *
- * \param pg designated session's poll group
- * \param vsession vhost session
- * \param cb_fn the function to call. The void *arg parameter in cb_fn
- * is always NULL.
- * \return always 0
- */
-int vhost_session_send_event(struct vhost_poll_group *pg,
-			     struct spdk_vhost_session *vsession,
-			     spdk_vhost_session_fn cb_fn);
-
-/**
  * Finish a blocking spdk_vhost_session_send_event() call and finally
  * start the session. This must be called on the target lcore, which
  * will now receive all session-related messages (e.g. from
