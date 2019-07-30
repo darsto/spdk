@@ -714,8 +714,7 @@ vhost_blk_start(struct spdk_vhost_session *vsession)
 	struct vhost_poll_group *pg;
 
 	pg = vhost_get_poll_group(vsession->vdev->cpumask);
-	return vhost_session_send_event(pg, vsession, vhost_blk_start_cb,
-					3, "start session");
+	return vhost_session_send_event(pg, vsession, vhost_blk_start_cb);
 }
 
 static int
@@ -770,7 +769,7 @@ static int
 vhost_blk_stop(struct spdk_vhost_session *vsession)
 {
 	return vhost_session_send_event(vsession->poll_group, vsession,
-					vhost_blk_stop_cb, 3, "stop session");
+					vhost_blk_stop_cb);
 }
 
 static void
