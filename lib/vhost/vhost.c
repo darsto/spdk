@@ -900,11 +900,27 @@ vhost_get_poll_group(struct spdk_cpuset *cpumask)
 	return selected_pg;
 }
 
+static struct vhost_poll_group *
+_get_current_poll_group(void)
+{
+	struct vhost_poll_group *pg;
+	struct spdk_thread *cur_thread = spdk_get_thread();
+
+	TAILQ_FOREACH(pg, &g_poll_groups, tailq) {
+		if (pg->thread == cur_thread) {
+			return pg;
+		}
+	}
+
+	return NULL;
+}
+
 void
 vhost_session_start_done(struct spdk_vhost_session *vsession, int response)
 {
 	if (response == 0) {
 		vsession->started = true;
+		vsession->poll_group = _get_current_poll_group();
 		assert(vsession->poll_group != NULL);
 		assert(vsession->poll_group->ref < UINT_MAX);
 		vsession->poll_group->ref++;
@@ -968,7 +984,6 @@ vhost_session_send_event(struct vhost_poll_group *pg,
 	ev_ctx->vsession_id = vsession->id;
 	ev_ctx->cb_fn = cb_fn;
 
-	vsession->poll_group = pg;
 	spdk_thread_send_msg(pg->thread, vhost_event_cb, ev_ctx);
 	return 0;
 }
