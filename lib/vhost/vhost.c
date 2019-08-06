@@ -563,15 +563,15 @@ vhost_session_find_by_vid(int vid)
 #define CEIL_2MB(x)	((((uintptr_t)x) + SIZE_2MB - 1) / SIZE_2MB) << SHIFT_2MB
 
 static void
-vhost_session_mem_register(struct spdk_vhost_session *vsession)
+register_vhost_mem(struct rte_vhost_memory *mem)
 {
 	struct rte_vhost_mem_region *region;
 	uint32_t i;
 	uint64_t previous_start = UINT64_MAX;
 
-	for (i = 0; i < vsession->mem->nregions; i++) {
+	for (i = 0; i < mem->nregions; i++) {
 		uint64_t start, end, len;
-		region = &vsession->mem->regions[i];
+		region = &mem->regions[i];
 		start = FLOOR_2MB(region->mmap_addr);
 		end = CEIL_2MB(region->mmap_addr + region->mmap_size);
 		if (start == previous_start) {
@@ -591,15 +591,15 @@ vhost_session_mem_register(struct spdk_vhost_session *vsession)
 }
 
 static void
-vhost_session_mem_unregister(struct spdk_vhost_session *vsession)
+unregister_vhost_mem(struct rte_vhost_memory *mem)
 {
 	struct rte_vhost_mem_region *region;
 	uint32_t i;
 	uint64_t previous_start = UINT64_MAX;
 
-	for (i = 0; i < vsession->mem->nregions; i++) {
+	for (i = 0; i < mem->nregions; i++) {
 		uint64_t start, end, len;
-		region = &vsession->mem->regions[i];
+		region = &mem->regions[i];
 		start = FLOOR_2MB(region->mmap_addr);
 		end = CEIL_2MB(region->mmap_addr + region->mmap_size);
 		if (start == previous_start) {
@@ -1112,7 +1112,7 @@ _stop_session(struct spdk_vhost_session *vsession)
 		rte_vhost_set_vring_base(vsession->vid, i, q->last_avail_idx, q->last_used_idx);
 	}
 
-	vhost_session_mem_unregister(vsession);
+	unregister_vhost_mem(vsession->mem);
 	free(vsession->mem);
 }
 
@@ -1219,7 +1219,7 @@ start_device(int vid)
 	}
 
 	vhost_session_set_coalescing(vdev, vsession, NULL);
-	vhost_session_mem_register(vsession);
+	register_vhost_mem(vsession->mem);
 	vsession->initialized = true;
 	vdev->backend->start_session(vsession);
 	pthread_mutex_unlock(&g_vhost_mutex);
@@ -1228,7 +1228,7 @@ start_device(int vid)
 
 	if (g_dpdk_response != 0) {
 		pthread_mutex_lock(&g_vhost_mutex);
-		vhost_session_mem_unregister(vsession);
+		unregister_vhost_mem(vsession->mem);
 		pthread_mutex_unlock(&g_vhost_mutex);
 		free(vsession->mem);
 		goto out;
