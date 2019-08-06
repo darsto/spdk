@@ -58,6 +58,16 @@ static spdk_vhost_fini_cb g_fini_cpl_cb;
 
 /** Data exchanged between DPDK and SPDK threads */
 static struct vhost_dpdk_info {
+	/** ID of the currently modified session */
+	int vid;
+	uint64_t negotiated_features;
+	struct rte_vhost_memory *mem;
+	struct vhost_dpdk_queue_info {
+		struct rte_vhost_vring vring;
+		uint16_t last_avail_idx;
+		uint16_t last_used_idx;
+	} queue[SPDK_VHOST_MAX_VQUEUES];
+
 	/**
 	 * DPDK calls our callbacks synchronously but the work those callbacks
 	 * perform needs to be async. Luckily, all DPDK callbacks are called on
@@ -1150,63 +1160,53 @@ stop_device(int vid)
 	pthread_mutex_unlock(&g_vhost_mutex);
 }
 
-static int
-start_device(int vid)
+static void
+start_device_cb(void *arg)
 {
 	struct spdk_vhost_dev *vdev;
 	struct spdk_vhost_session *vsession;
-	int rc = -1;
 	uint16_t i;
 
 	pthread_mutex_lock(&g_vhost_mutex);
-
-	vsession = vhost_session_find_by_vid(vid);
+	vsession = vhost_session_find_by_vid(g_dpdk_info.vid);
 	if (vsession == NULL) {
-		SPDK_ERRLOG("Couldn't find session with vid %d.\n", vid);
-		goto out;
+		SPDK_ERRLOG("Couldn't find session with vid %d.\n", g_dpdk_info.vid);
+		pthread_mutex_unlock(&g_vhost_mutex);
+		vhost_session_start_done(vsession, -1);
+		return;
 	}
 
 	vdev = vsession->vdev;
 	if (vsession->started) {
 		/* already started, nothing to do */
-		rc = 0;
-		goto out;
+		pthread_mutex_unlock(&g_vhost_mutex);
+		vhost_session_start_done(vsession, 0);
+		return;
 	}
 
 	vsession->max_queues = 0;
 	memset(vsession->virtqueue, 0, sizeof(vsession->virtqueue));
 	for (i = 0; i < SPDK_VHOST_MAX_VQUEUES; i++) {
 		struct spdk_vhost_virtqueue *q = &vsession->virtqueue[i];
+		struct vhost_dpdk_queue_info *q_info = &g_dpdk_info.queue[i];
 
 		q->vring_idx = -1;
-		if (rte_vhost_get_vhost_vring(vid, i, &q->vring)) {
+		if (q_info->vring.desc == NULL || q_info->vring.size == 0) {
 			continue;
 		}
+
+		memcpy(&q->vring, &q_info->vring, sizeof(q->vring));
 		q->vring_idx = i;
-
-		if (q->vring.desc == NULL || q->vring.size == 0) {
-			continue;
-		}
-
-		if (rte_vhost_get_vring_base(vsession->vid, i, &q->last_avail_idx, &q->last_used_idx)) {
-			q->vring.desc = NULL;
-			continue;
-		}
+		q->last_used_idx = q_info->last_used_idx;
+		q->last_avail_idx = q_info->last_avail_idx;
 
 		/* Disable I/O submission notifications, we'll be polling. */
 		q->vring.used->flags = VRING_USED_F_NO_NOTIFY;
 		vsession->max_queues = i + 1;
 	}
 
-	if (rte_vhost_get_negotiated_features(vid, &vsession->negotiated_features) != 0) {
-		SPDK_ERRLOG("vhost device %d: Failed to get negotiated driver features\n", vid);
-		goto out;
-	}
-
-	if (rte_vhost_get_mem_table(vid, &vsession->mem) != 0) {
-		SPDK_ERRLOG("vhost device %d: Failed to get guest memory table\n", vid);
-		goto out;
-	}
+	vsession->negotiated_features = g_dpdk_info.negotiated_features;
+	vsession->mem = g_dpdk_info.mem;
 
 	/*
 	 * Not sure right now but this look like some kind of QEMU bug and guest IO
@@ -1226,25 +1226,56 @@ start_device(int vid)
 	}
 
 	vhost_session_set_coalescing(vdev, vsession, NULL);
-	register_vhost_mem(vsession->mem);
 	vsession->initialized = true;
 	vdev->backend->start_session(vsession);
 	pthread_mutex_unlock(&g_vhost_mutex);
+}
 
+static int
+start_device(int vid)
+{
+	uint16_t i;
+
+	g_dpdk_info.vid = vid;
+	for (i = 0; i < SPDK_VHOST_MAX_VQUEUES; i++) {
+		struct vhost_dpdk_queue_info *q_info = &g_dpdk_info.queue[i];
+
+		if (rte_vhost_get_vhost_vring(vid, i, &q_info->vring)) {
+			continue;
+		}
+
+		if (rte_vhost_get_vring_base(vid, i,
+					     &q_info->last_avail_idx,
+					     &q_info->last_used_idx)) {
+			q_info->vring.desc = NULL;
+		}
+	}
+
+	if (rte_vhost_get_negotiated_features(vid, &g_dpdk_info.negotiated_features) != 0) {
+		SPDK_ERRLOG("vhost device %d: Failed to get negotiated driver features\n", vid);
+		return -1;
+	}
+
+	if (rte_vhost_get_mem_table(vid, &g_dpdk_info.mem) != 0) {
+		SPDK_ERRLOG("vhost device %d: Failed to get guest memory table\n", vid);
+		return -1;
+	}
+
+	/* This can be an extremely long, synchronous operation, so do it on this
+	 * DPDK thread rather than the SPDK's init thread which could be already
+	 * busy with handling other I/Os.
+	 */
+	register_vhost_mem(g_dpdk_info.mem);
+
+	spdk_thread_send_msg(g_vhost_init_thread, start_device_cb, NULL);
 	block_dpdk_thread();
 
 	if (g_dpdk_info.response != 0) {
-		pthread_mutex_lock(&g_vhost_mutex);
-		unregister_vhost_mem(vsession->mem);
-		pthread_mutex_unlock(&g_vhost_mutex);
-		free(vsession->mem);
-		goto out;
+		unregister_vhost_mem(g_dpdk_info.mem);
+		free(g_dpdk_info.mem);
 	}
 
 	return g_dpdk_info.response;
-out:
-	pthread_mutex_unlock(&g_vhost_mutex);
-	return rc;
 }
 
 #ifdef SPDK_CONFIG_VHOST_INTERNAL_LIB
