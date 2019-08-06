@@ -102,31 +102,8 @@ struct vhost_session_fn_ctx {
 	void *user_ctx;
 };
 
-static int new_connection(int vid);
-static int start_device(int vid);
-static void stop_device(int vid);
-static void destroy_connection(int vid);
-
-#ifdef SPDK_CONFIG_VHOST_INTERNAL_LIB
-static int get_config(int vid, uint8_t *config, uint32_t len);
-static int set_config(int vid, uint8_t *config, uint32_t offset,
-		      uint32_t size, uint32_t flags);
-#endif
-
-const struct vhost_device_ops g_dpdk_vhost_ops = {
-	.new_device =  start_device,
-	.destroy_device = stop_device,
-	.new_connection = new_connection,
-	.destroy_connection = destroy_connection,
-#ifdef SPDK_CONFIG_VHOST_INTERNAL_LIB
-	.get_config = get_config,
-	.set_config = set_config,
-	.vhost_nvme_admin_passthrough = vhost_nvme_admin_passthrough,
-	.vhost_nvme_set_cq_call = vhost_nvme_set_cq_call,
-	.vhost_nvme_get_cap = vhost_nvme_get_cap,
-	.vhost_nvme_set_bar_mr = vhost_nvme_set_bar_mr,
-#endif
-};
+/** DPDK callbacks */
+const struct vhost_device_ops g_dpdk_vhost_ops;
 
 static TAILQ_HEAD(, spdk_vhost_dev) g_vhost_devices = TAILQ_HEAD_INITIALIZER(
 			g_vhost_devices);
@@ -1473,6 +1450,21 @@ destroy_connection(int vid)
 	free(vsession);
 	pthread_mutex_unlock(&g_vhost_mutex);
 }
+
+const struct vhost_device_ops g_dpdk_vhost_ops = {
+	.new_device =  start_device,
+	.destroy_device = stop_device,
+	.new_connection = new_connection,
+	.destroy_connection = destroy_connection,
+#ifdef SPDK_CONFIG_VHOST_INTERNAL_LIB
+	.get_config = get_config,
+	.set_config = set_config,
+	.vhost_nvme_admin_passthrough = vhost_nvme_admin_passthrough,
+	.vhost_nvme_set_cq_call = vhost_nvme_set_cq_call,
+	.vhost_nvme_get_cap = vhost_nvme_get_cap,
+	.vhost_nvme_set_bar_mr = vhost_nvme_set_bar_mr,
+#endif
+};
 
 void
 spdk_vhost_lock(void)
