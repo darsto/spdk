@@ -1072,24 +1072,31 @@ vhost_dev_foreach_session(struct spdk_vhost_dev *vdev,
 }
 
 static void
-_stop_session(struct spdk_vhost_session *vsession)
+block_dpdk_thread(void)
 {
-	struct spdk_vhost_dev *vdev = vsession->vdev;
-	struct spdk_vhost_virtqueue *q;
 	struct timespec timeout;
 	int rc;
-	uint16_t i;
-
-	vdev->backend->stop_session(vsession);
-	pthread_mutex_unlock(&g_vhost_mutex);
 
 	clock_gettime(CLOCK_REALTIME, &timeout);
 	timeout.tv_sec += 3;
 	rc = sem_timedwait(&g_dpdk_sem, &timeout);
 	if (rc != 0) {
-		SPDK_ERRLOG("%s: session start timed out\n", vsession->name);
+		SPDK_ERRLOG("timeout\n");
 		sem_wait(&g_dpdk_sem);
 	}
+}
+
+static void
+_stop_session(struct spdk_vhost_session *vsession)
+{
+	struct spdk_vhost_dev *vdev = vsession->vdev;
+	struct spdk_vhost_virtqueue *q;
+	uint16_t i;
+
+	vdev->backend->stop_session(vsession);
+	pthread_mutex_unlock(&g_vhost_mutex);
+
+	block_dpdk_thread();
 
 	if (g_dpdk_response != 0) {
 		SPDK_ERRLOG("Couldn't stop device with vid %d.\n", vsession->vid);
@@ -1137,7 +1144,6 @@ start_device(int vid)
 {
 	struct spdk_vhost_dev *vdev;
 	struct spdk_vhost_session *vsession;
-	struct timespec timeout;
 	int rc = -1;
 	uint16_t i;
 
@@ -1218,13 +1224,7 @@ start_device(int vid)
 	vdev->backend->start_session(vsession);
 	pthread_mutex_unlock(&g_vhost_mutex);
 
-	clock_gettime(CLOCK_REALTIME, &timeout);
-	timeout.tv_sec += 3;
-	rc = sem_timedwait(&g_dpdk_sem, &timeout);
-	if (rc != 0) {
-		SPDK_ERRLOG("%s: session stop timed out\n", vsession->name);
-		sem_wait(&g_dpdk_sem);
-	}
+	block_dpdk_thread();
 
 	if (g_dpdk_response != 0) {
 		pthread_mutex_lock(&g_vhost_mutex);
