@@ -56,17 +56,24 @@ static struct spdk_thread *g_vhost_init_thread;
 
 static spdk_vhost_fini_cb g_fini_cpl_cb;
 
+struct vhost_dpdk_queue_info {
+	struct rte_vhost_vring vring;
+	uint16_t last_avail_idx;
+	uint16_t last_used_idx;
+};
+
 /** Data exchanged between DPDK and SPDK threads */
 static struct vhost_dpdk_info {
 	/** ID of the currently modified session */
 	int vid;
-	uint64_t negotiated_features;
-	struct rte_vhost_memory *mem;
-	struct vhost_dpdk_queue_info {
-		struct rte_vhost_vring vring;
-		uint16_t last_avail_idx;
-		uint16_t last_used_idx;
-	} queue[SPDK_VHOST_MAX_VQUEUES];
+
+	union {
+		struct {
+			uint64_t negotiated_features;
+			struct rte_vhost_memory *mem;
+			struct vhost_dpdk_queue_info queue[SPDK_VHOST_MAX_VQUEUES];
+		} start, stop;
+	} u;
 
 	/**
 	 * DPDK calls our callbacks synchronously but the work those callbacks
@@ -935,10 +942,10 @@ vhost_session_stop_done(struct spdk_vhost_session *vsession, int response)
 		assert(vsession->vdev->active_session_num > 0);
 		vsession->vdev->active_session_num--;
 
-		g_dpdk_info.mem = vsession->mem;
+		g_dpdk_info.u.stop.mem = vsession->mem;
 		for (i = 0; i < SPDK_VHOST_MAX_VQUEUES; i++) {
 			struct spdk_vhost_virtqueue *q = &vsession->virtqueue[i];
-			struct vhost_dpdk_queue_info *q_info = &g_dpdk_info.queue[i];
+			struct vhost_dpdk_queue_info *q_info = &g_dpdk_info.u.stop.queue[i];
 
 			if (q->vring.desc == NULL || q->vring.size == 0) {
 				memset(q_info, 0, sizeof(*q_info));
@@ -1136,7 +1143,7 @@ stop_device(int vid)
 	}
 
 	for (i = 0; i < SPDK_VHOST_MAX_VQUEUES; i++) {
-		struct vhost_dpdk_queue_info *q_info = &g_dpdk_info.queue[i];
+		struct vhost_dpdk_queue_info *q_info = &g_dpdk_info.u.stop.queue[i];
 
 		if (q_info->vring.desc == NULL) {
 			continue;
@@ -1147,8 +1154,8 @@ stop_device(int vid)
 					 q_info->last_used_idx);
 	}
 
-	unregister_vhost_mem(g_dpdk_info.mem);
-	free(g_dpdk_info.mem);
+	unregister_vhost_mem(g_dpdk_info.u.stop.mem);
+	free(g_dpdk_info.u.stop.mem);
 }
 
 static void
@@ -1179,7 +1186,7 @@ start_device_cb(void *arg)
 	memset(vsession->virtqueue, 0, sizeof(vsession->virtqueue));
 	for (i = 0; i < SPDK_VHOST_MAX_VQUEUES; i++) {
 		struct spdk_vhost_virtqueue *q = &vsession->virtqueue[i];
-		struct vhost_dpdk_queue_info *q_info = &g_dpdk_info.queue[i];
+		struct vhost_dpdk_queue_info *q_info = &g_dpdk_info.u.start.queue[i];
 
 		q->vring_idx = -1;
 		if (q_info->vring.desc == NULL || q_info->vring.size == 0) {
@@ -1196,8 +1203,8 @@ start_device_cb(void *arg)
 		vsession->max_queues = i + 1;
 	}
 
-	vsession->negotiated_features = g_dpdk_info.negotiated_features;
-	vsession->mem = g_dpdk_info.mem;
+	vsession->negotiated_features = g_dpdk_info.u.start.negotiated_features;
+	vsession->mem = g_dpdk_info.u.start.mem;
 
 	/*
 	 * Not sure right now but this look like some kind of QEMU bug and guest IO
@@ -1229,7 +1236,7 @@ start_device(int vid)
 
 	g_dpdk_info.vid = vid;
 	for (i = 0; i < SPDK_VHOST_MAX_VQUEUES; i++) {
-		struct vhost_dpdk_queue_info *q_info = &g_dpdk_info.queue[i];
+		struct vhost_dpdk_queue_info *q_info = &g_dpdk_info.u.start.queue[i];
 
 		if (rte_vhost_get_vhost_vring(vid, i, &q_info->vring)) {
 			continue;
@@ -1242,12 +1249,12 @@ start_device(int vid)
 		}
 	}
 
-	if (rte_vhost_get_negotiated_features(vid, &g_dpdk_info.negotiated_features) != 0) {
+	if (rte_vhost_get_negotiated_features(vid, &g_dpdk_info.u.start.negotiated_features) != 0) {
 		SPDK_ERRLOG("vhost device %d: Failed to get negotiated driver features\n", vid);
 		return -1;
 	}
 
-	if (rte_vhost_get_mem_table(vid, &g_dpdk_info.mem) != 0) {
+	if (rte_vhost_get_mem_table(vid, &g_dpdk_info.u.start.mem) != 0) {
 		SPDK_ERRLOG("vhost device %d: Failed to get guest memory table\n", vid);
 		return -1;
 	}
@@ -1256,14 +1263,14 @@ start_device(int vid)
 	 * DPDK thread rather than the SPDK's init thread which could be already
 	 * busy with handling other I/Os.
 	 */
-	register_vhost_mem(g_dpdk_info.mem);
+	register_vhost_mem(g_dpdk_info.u.start.mem);
 
 	spdk_thread_send_msg(g_vhost_init_thread, start_device_cb, NULL);
 	block_dpdk_thread();
 
 	if (g_dpdk_info.response != 0) {
-		unregister_vhost_mem(g_dpdk_info.mem);
-		free(g_dpdk_info.mem);
+		unregister_vhost_mem(g_dpdk_info.u.start.mem);
+		free(g_dpdk_info.u.start.mem);
 	}
 
 	return g_dpdk_info.response;
