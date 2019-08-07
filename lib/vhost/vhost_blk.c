@@ -821,8 +821,8 @@ vhost_blk_write_config_json(struct spdk_vhost_dev *vdev, struct spdk_json_write_
 static int vhost_blk_destroy(struct spdk_vhost_dev *dev);
 
 static int
-vhost_blk_get_config(struct spdk_vhost_dev *vdev, uint8_t *config,
-		     uint32_t len)
+vhost_blk_get_config(struct spdk_vhost_session *vsession,
+		     uint8_t *config, uint32_t len)
 {
 	struct virtio_blk_config blkcfg;
 	struct spdk_vhost_blk_dev *bvdev;
@@ -830,7 +830,7 @@ vhost_blk_get_config(struct spdk_vhost_dev *vdev, uint8_t *config,
 	uint32_t blk_size;
 	uint64_t blkcnt;
 
-	bvdev = to_blk_dev(vdev);
+	bvdev = to_blk_dev(vsession->vdev);
 	assert(bvdev != NULL);
 	bdev = bvdev->bdev;
 	if (bdev == NULL) {
@@ -901,7 +901,7 @@ static const struct spdk_vhost_dev_backend vhost_blk_device_backend = {
 	.session_ctx_size = sizeof(struct spdk_vhost_blk_session) - sizeof(struct spdk_vhost_session),
 	.start_session =  vhost_blk_start,
 	.stop_session = vhost_blk_stop,
-	.vhost_get_config = vhost_blk_get_config,
+	.get_config = vhost_blk_get_config,
 	.dump_info_json = vhost_blk_dump_info_json,
 	.write_config_json = vhost_blk_write_config_json,
 	.remove_device = vhost_blk_destroy,
