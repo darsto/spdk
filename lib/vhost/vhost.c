@@ -69,6 +69,9 @@ static struct vhost_dpdk_info {
 
 	union {
 		struct {
+			char path[PATH_MAX];
+		} connect;
+		struct {
 			uint64_t negotiated_features;
 			struct rte_vhost_memory *mem;
 			struct vhost_dpdk_queue_info queue[SPDK_VHOST_MAX_VQUEUES];
@@ -1412,26 +1415,20 @@ spdk_vhost_dev_remove(struct spdk_vhost_dev *vdev)
 	return vdev->backend->remove_device(vdev);
 }
 
-static int
-new_connection(int vid)
+static void
+new_connection_cb(void *arg)
 {
 	struct spdk_vhost_dev *vdev;
 	struct spdk_vhost_session *vsession;
-	char ifname[PATH_MAX];
+	int rc = 0;
 
 	pthread_mutex_lock(&g_vhost_mutex);
-
-	if (rte_vhost_get_ifname(vid, ifname, PATH_MAX) < 0) {
-		SPDK_ERRLOG("Couldn't get a valid ifname for device with vid %d\n", vid);
-		pthread_mutex_unlock(&g_vhost_mutex);
-		return -1;
-	}
-
-	vdev = spdk_vhost_dev_find(ifname);
+	vdev = spdk_vhost_dev_find(g_dpdk_info.u.connect.path);
 	if (vdev == NULL) {
-		SPDK_ERRLOG("Couldn't find device with vid %d to create connection for.\n", vid);
-		pthread_mutex_unlock(&g_vhost_mutex);
-		return -1;
+		SPDK_ERRLOG("Couldn't find device with vid %d to create connection for.\n",
+			    g_dpdk_info.vid);
+		rc = -1;
+		goto out_unlock;
 	}
 
 	/* We expect sessions inside vdev->vsessions to be sorted in ascending
@@ -1441,26 +1438,28 @@ new_connection(int vid)
 	 */
 	if (vdev->vsessions_num == UINT_MAX) {
 		assert(false);
-		return -EINVAL;
+		rc = -1;
+		goto out_unlock;
 	}
 
 	if (posix_memalign((void **)&vsession, SPDK_CACHE_LINE_SIZE, sizeof(*vsession) +
 			   vdev->backend->session_ctx_size)) {
 		SPDK_ERRLOG("vsession alloc failed\n");
-		pthread_mutex_unlock(&g_vhost_mutex);
-		return -1;
+		rc = -1;
+		goto out_unlock;
 	}
 	memset(vsession, 0, sizeof(*vsession) + vdev->backend->session_ctx_size);
 
 	vsession->vdev = vdev;
-	vsession->vid = vid;
+	vsession->vid = g_dpdk_info.vid;
 	vsession->id = vdev->vsessions_num++;
 	vsession->name = spdk_sprintf_alloc("%ss%u", vdev->name, vsession->vid);
 	if (vsession->name == NULL) {
 		SPDK_ERRLOG("vsession alloc failed\n");
 		pthread_mutex_unlock(&g_vhost_mutex);
 		free(vsession);
-		return -1;
+		rc = -1;
+		goto out_unlock;
 	}
 	vsession->poll_group = NULL;
 	vsession->started = false;
@@ -1470,9 +1469,28 @@ new_connection(int vid)
 					 spdk_get_ticks_hz() / 1000UL;
 	TAILQ_INSERT_TAIL(&vdev->vsessions, vsession, tailq);
 
-	vhost_session_install_rte_compat_hooks(vid);
+out_unlock:
 	pthread_mutex_unlock(&g_vhost_mutex);
-	return 0;
+	unblock_dpdk_thread(rc);
+}
+
+static int
+new_connection(int vid)
+{
+	g_dpdk_info.vid = vid;
+	if (rte_vhost_get_ifname(vid, g_dpdk_info.u.connect.path, PATH_MAX) < 0) {
+		SPDK_ERRLOG("rte_vhost_get_ifname() failed for vid = %d\n", vid);
+		return -1;
+	}
+
+	spdk_thread_send_msg(g_vhost_init_thread, new_connection_cb, NULL);
+	block_dpdk_thread();
+
+	if (g_dpdk_info.response == 0) {
+		vhost_session_install_rte_compat_hooks(vid);
+	}
+
+	return g_dpdk_info.response;
 }
 
 static void
