@@ -909,6 +909,13 @@ _get_current_poll_group(void)
 	return NULL;
 }
 
+static void
+kick_dpdk_thread(int rc)
+{
+	g_dpdk_info.response = rc;
+	sem_post(&g_dpdk_info.sem);
+}
+
 void
 vhost_session_start_done(struct spdk_vhost_session *vsession, int response)
 {
@@ -923,8 +930,7 @@ vhost_session_start_done(struct spdk_vhost_session *vsession, int response)
 		vsession->vdev->active_session_num++;
 	}
 
-	g_dpdk_info.response = response;
-	sem_post(&g_dpdk_info.sem);
+	kick_dpdk_thread(response);
 }
 
 void
@@ -958,8 +964,7 @@ vhost_session_stop_done(struct spdk_vhost_session *vsession, int response)
 		}
 	}
 
-	g_dpdk_info.response = response;
-	sem_post(&g_dpdk_info.sem);
+	kick_dpdk_thread(response);
 }
 
 static void foreach_session_continue(struct vhost_session_fn_ctx *ev_ctx,
