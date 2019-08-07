@@ -203,37 +203,37 @@ struct rte_vhost_user_extern_ops g_extern_vhost_ops = {
 };
 
 void
-vhost_session_install_rte_compat_hooks(struct spdk_vhost_session *vsession)
+vhost_session_install_rte_compat_hooks(int vid)
 {
 	int rc;
 
-	rc = rte_vhost_extern_callback_register(vsession->vid, &g_extern_vhost_ops, NULL);
+	rc = rte_vhost_extern_callback_register(vid, &g_extern_vhost_ops, NULL);
 	if (rc != 0) {
 		SPDK_ERRLOG("rte_vhost_extern_callback_register() failed for vid = %d\n",
-			    vsession->vid);
+			    vid);
 		return;
 	}
 }
 
 void
-vhost_dev_install_rte_compat_hooks(struct spdk_vhost_dev *vdev)
+vhost_dev_install_rte_compat_hooks(const char *socket_path)
 {
 	uint64_t protocol_features = 0;
 
-	rte_vhost_driver_get_protocol_features(vdev->path, &protocol_features);
+	rte_vhost_driver_get_protocol_features(socket_path, &protocol_features);
 	protocol_features |= (1ULL << VHOST_USER_PROTOCOL_F_CONFIG);
-	rte_vhost_driver_set_protocol_features(vdev->path, protocol_features);
+	rte_vhost_driver_set_protocol_features(socket_path, protocol_features);
 }
 
 #else /* SPDK_CONFIG_VHOST_INTERNAL_LIB */
 void
-vhost_session_install_rte_compat_hooks(struct spdk_vhost_session *vsession)
+vhost_session_install_rte_compat_hooks(int vid)
 {
 	/* nothing to do. all the changes are already incorporated into rte_vhost */
 }
 
 void
-vhost_dev_install_rte_compat_hooks(struct spdk_vhost_dev *vdev)
+vhost_dev_install_rte_compat_hooks(const char *socket_path)
 {
 	/* nothing to do */
 }
