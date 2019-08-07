@@ -359,8 +359,8 @@ void vhost_session_start_done(struct spdk_vhost_session *vsession, int response)
 void vhost_session_stop_done(struct spdk_vhost_session *vsession, int response);
 
 struct spdk_vhost_session *vhost_session_find_by_vid(int vid);
-void vhost_session_install_rte_compat_hooks(struct spdk_vhost_session *vsession);
-void vhost_dev_install_rte_compat_hooks(struct spdk_vhost_dev *vdev);
+void vhost_session_install_rte_compat_hooks(int vid);
+void vhost_dev_install_rte_compat_hooks(const char *socket_path);
 
 struct vhost_poll_group *vhost_get_poll_group(struct spdk_cpuset *cpumask);
 void vhost_put_poll_group(struct vhost_poll_group *pg);

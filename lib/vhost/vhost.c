@@ -804,7 +804,7 @@ vhost_dev_register(struct spdk_vhost_dev *vdev, const char *name, const char *ma
 	vhost_dev_set_coalescing(vdev, SPDK_VHOST_COALESCING_DELAY_BASE_US,
 				 SPDK_VHOST_VQ_IOPS_COALESCING_THRESHOLD);
 
-	vhost_dev_install_rte_compat_hooks(vdev);
+	vhost_dev_install_rte_compat_hooks(path);
 
 	/* The following might start a POSIX thread that polls for incoming
 	 * socket connections and calls backend->start/stop_device. These backend
@@ -1446,7 +1446,7 @@ new_connection(int vid)
 					 spdk_get_ticks_hz() / 1000UL;
 	TAILQ_INSERT_TAIL(&vdev->vsessions, vsession, tailq);
 
-	vhost_session_install_rte_compat_hooks(vsession);
+	vhost_session_install_rte_compat_hooks(vid);
 	pthread_mutex_unlock(&g_vhost_mutex);
 	return 0;
 }
