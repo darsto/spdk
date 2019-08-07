@@ -114,8 +114,8 @@ spdk_extern_vhost_pre_msg_handler(int vid, void *_msg)
 		int rc = 0;
 
 		spdk_vhost_lock();
-		if (vsession->vdev->backend->vhost_get_config) {
-			rc = vsession->vdev->backend->vhost_get_config(vsession->vdev,
+		if (vsession->vdev->backend->get_config) {
+			rc = vsession->vdev->backend->get_config(vsession,
 				msg->payload.cfg.region, msg->payload.cfg.size);
 			if (rc != 0) {
 				msg->size = 0;
@@ -129,8 +129,8 @@ spdk_extern_vhost_pre_msg_handler(int vid, void *_msg)
 		int rc = 0;
 
 		spdk_vhost_lock();
-		if (vsession->vdev->backend->vhost_set_config) {
-			rc = vsession->vdev->backend->vhost_set_config(vsession->vdev,
+		if (vsession->vdev->backend->set_config) {
+			rc = vsession->vdev->backend->set_config(vsession,
 				msg->payload.cfg.region, msg->payload.cfg.offset,
 				msg->payload.cfg.size, msg->payload.cfg.flags);
 		}

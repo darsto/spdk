@@ -226,9 +226,10 @@ struct spdk_vhost_dev_backend {
 	int (*start_session)(struct spdk_vhost_session *vsession);
 	int (*stop_session)(struct spdk_vhost_session *vsession);
 
-	int (*vhost_get_config)(struct spdk_vhost_dev *vdev, uint8_t *config, uint32_t len);
-	int (*vhost_set_config)(struct spdk_vhost_dev *vdev, uint8_t *config,
-				uint32_t offset, uint32_t size, uint32_t flags);
+	int (*get_config)(struct spdk_vhost_session *vsession,
+			  uint8_t *config, uint32_t len);
+	int (*set_config)(struct spdk_vhost_session *vsession, uint8_t *config,
+			  uint32_t offset, uint32_t size, uint32_t flags);
 
 	void (*dump_info_json)(struct spdk_vhost_dev *vdev, struct spdk_json_write_ctx *w);
 	void (*write_config_json)(struct spdk_vhost_dev *vdev, struct spdk_json_write_ctx *w);
