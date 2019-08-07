@@ -73,6 +73,12 @@ static struct vhost_dpdk_info {
 			struct rte_vhost_memory *mem;
 			struct vhost_dpdk_queue_info queue[SPDK_VHOST_MAX_VQUEUES];
 		} start, stop;
+		struct {
+			uint8_t *buf;
+			uint32_t offset;
+			uint32_t size;
+			uint32_t flags;
+		} config;
 	} u;
 
 	/**
@@ -1282,52 +1288,86 @@ start_device(int vid)
 }
 
 #ifdef SPDK_CONFIG_VHOST_INTERNAL_LIB
-static int
-get_config(int vid, uint8_t *config, uint32_t len)
+static void
+get_config_cb(void *arg)
 {
 	struct spdk_vhost_session *vsession;
 	struct spdk_vhost_dev *vdev;
 	int rc = -1;
 
 	pthread_mutex_lock(&g_vhost_mutex);
-	vsession = vhost_session_find_by_vid(vid);
+	vsession = vhost_session_find_by_vid(g_dpdk_info.vid);
 	if (vsession == NULL) {
-		SPDK_ERRLOG("Couldn't find session with vid %d.\n", vid);
-		goto out;
+		SPDK_ERRLOG("Couldn't find session with vid %d.\n", g_dpdk_info.vid);
+		pthread_mutex_unlock(&g_vhost_mutex);
+		kick_dpdk_thread(-1);
+		return;
 	}
 
 	vdev = vsession->vdev;
 	if (vdev->backend->vhost_get_config) {
-		rc = vdev->backend->vhost_get_config(vdev, config, len);
+		rc = vdev->backend->vhost_get_config(vsession,
+						     g_dpdk_info.u.config.buf,
+						     g_dpdk_info.u.config.size);
 	}
 
-out:
 	pthread_mutex_unlock(&g_vhost_mutex);
-	return rc;
+	kick_dpdk_thread(rc);
+}
+
+static int
+get_config(int vid, uint8_t *config, uint32_t size)
+{
+	g_dpdk_info.u.config.buf = config;
+	g_dpdk.info.u.config.size = size;
+
+	spdk_thread_send_msg(g_vhost_init_thread, get_config_cb, NULL);
+	block_dpdk_thread();
+
+	return g_dpdk_info.response;
+}
+
+static void
+set_config_cb(void *arg)
+{
+	struct spdk_vhost_session *vsession;
+	struct spdk_vhost_dev *vdev;
+	int rc = -1;
+
+	pthread_mutex_lock(&g_vhost_mutex);
+	vsession = vhost_session_find_by_vid(g_dpdk_info.vid);
+	if (vsession == NULL) {
+		SPDK_ERRLOG("Couldn't find session with vid %d.\n", g_dpdk_info.vid);
+		pthread_mutex_unlock(&g_vhost_mutex);
+		kick_dpdk_thread(-1);
+		return;
+	}
+
+	vdev = vsession->vdev;
+	if (vdev->backend->vhost_set_config) {
+		rc = vdev->backend->vhost_set_config(vsession,
+						     g_dpdk_info.u.config.buf,
+						     g_dpdk_info.u.offset,
+						     g_dpdk_info.u.size,
+						     g_dpdk_info.u.flags);
+	}
+
+	pthread_mutex_unlock(&g_vhost_mutex);
+	kick_dpdk_thread(rc);
 }
 
 static int
 set_config(int vid, uint8_t *config, uint32_t offset, uint32_t size, uint32_t flags)
 {
-	struct spdk_vhost_session *vsession;
-	struct spdk_vhost_dev *vdev;
-	int rc = -1;
+	g_dpdk_info.u.config.buf = config;
+	g_dpdk_info.u.config.offset = offset;
+	g_dpdk.info.u.config.size = size;
+	g_dpdk.info.u.config.flags = flags;
 
-	pthread_mutex_lock(&g_vhost_mutex);
-	vsession = vhost_session_find_by_vid(vid);
-	if (vsession == NULL) {
-		SPDK_ERRLOG("Couldn't find session with vid %d.\n", vid);
-		goto out;
-	}
+	spdk_thread_send_msg(g_vhost_init_thread, set_config_cb, NULL);
+	block_dpdk_thread();
 
-	vdev = vsession->vdev;
-	if (vdev->backend->vhost_set_config) {
-		rc = vdev->backend->vhost_set_config(vdev, config, offset, size, flags);
-	}
-
-out:
-	pthread_mutex_unlock(&g_vhost_mutex);
-	return rc;
+	return g_dpdk_info.response;
 }
 #endif
 
