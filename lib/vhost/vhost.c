@@ -1147,7 +1147,8 @@ stop_device(int vid)
 	uint16_t i;
 
 	g_dpdk_info.vid = vid;
-	spdk_thread_send_msg(g_vhost_init_thread, stop_device_cb, NULL);
+	spdk_thread_send_msg(g_vhost_init_thread,
+			     g_vhost_sock_ops.stop_session, NULL);
 	block_dpdk_thread();
 
 	if (g_dpdk_info.response == -EALREADY) {
@@ -1280,7 +1281,8 @@ start_device(int vid)
 	 */
 	register_vhost_mem(g_dpdk_info.u.start.mem);
 
-	spdk_thread_send_msg(g_vhost_init_thread, start_device_cb, NULL);
+	spdk_thread_send_msg(g_vhost_init_thread,
+			     g_vhost_sock_ops.start_session, NULL);
 	block_dpdk_thread();
 
 	if (g_dpdk_info.response == -EALREADY) {
@@ -1486,7 +1488,8 @@ new_connection(int vid)
 		return -EFAULT;
 	}
 
-	spdk_thread_send_msg(g_vhost_init_thread, new_connection_cb, NULL);
+	spdk_thread_send_msg(g_vhost_init_thread,
+			     g_vhost_sock_ops.new_session, NULL);
 	block_dpdk_thread();
 
 	if (g_dpdk_info.response == 0) {
@@ -1529,9 +1532,18 @@ destroy_connection(int vid)
 	stop_device(vid);
 
 	g_dpdk_info.vid = vid;
-	spdk_thread_send_msg(g_vhost_init_thread, destroy_connection_cb, NULL);
+	spdk_thread_send_msg(g_vhost_init_thread,
+			     g_vhost_sock_ops.delete_session, NULL);
 	block_dpdk_thread();
 }
+
+struct vhost_sock_ops g_vhost_sock_ops = {
+	.new_session = new_connection_cb,
+	.delete_session = destroy_connection_cb,
+	.start_session = start_device_cb,
+	.stop_session = stop_device_cb,
+	/* TODO: get/set_config */
+};
 
 const struct vhost_device_ops g_dpdk_vhost_ops = {
 	.new_device =  start_device,
