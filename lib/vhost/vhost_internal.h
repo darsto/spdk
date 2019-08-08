@@ -331,6 +331,29 @@ void vhost_dev_foreach_session(struct spdk_vhost_dev *dev,
 			       void *arg);
 
 /**
+ * Callbacks to be called on incoming vhost socket events.
+ * All events need to be consumed with vhost_session_dpdk_cb_done(),
+ * with the exception of start_session/stop_session which need to be
+ * consumed with vhost_session_start_done()/vhost_session_stop_done().
+ */
+struct vhost_sock_ops {
+	/** New session is created */
+	void (*new_session)(void *unused);
+	/** A session is being destroyed */
+	void (*delete_session)(void *unused);
+	/** A session is ready to be polled */
+	void (*start_session)(void *unused);
+	/** A session is no longer capable of being processed */
+	void (*stop_session)(void *unused);
+	/** Session's Virtio-PCI config is requested */
+	void (*get_config)(void *unused);
+	/** Session's Virtio-PCI config is overwritten */
+	void (*set_config)(void *unused);
+};
+
+extern struct vhost_sock_ops g_vhost_sock_ops;
+
+/**
  * Finish a blocking spdk_vhost_session_send_event() call and finally
  * start the session. This must be called on the target lcore, which
  * will now receive all session-related messages (e.g. from
@@ -352,12 +375,20 @@ void vhost_session_start_done(struct spdk_vhost_session *vsession, int response)
  *
  * Must be called under the global vhost lock.
  *
- * Must be called under the global vhost mutex.
- *
  * \param vsession vhost session
  * \param response return code
  */
 void vhost_session_stop_done(struct spdk_vhost_session *vsession, int response);
+
+/**
+ * Finish an asynchronous vhost socket operation.
+ *
+ * Must be called under the global vhost lock.
+ *
+ * \param vsession vhost session
+ * \param response return code
+ */
+void vhost_session_dpdk_cb_done(struct spdk_vhost_session *vsession, int response);
 
 struct spdk_vhost_session *vhost_session_find_by_vid(int vid);
 void vhost_session_install_rte_compat_hooks(int vid);
@@ -367,6 +398,7 @@ struct vhost_poll_group *vhost_get_poll_group(struct spdk_cpuset *cpumask);
 void vhost_put_poll_group(struct vhost_poll_group *pg);
 
 int remove_vhost_controller(struct spdk_vhost_dev *vdev);
+
 
 #ifdef SPDK_CONFIG_VHOST_INTERNAL_LIB
 int vhost_nvme_admin_passthrough(int vid, void *cmd, void *cqe, void *buf);
