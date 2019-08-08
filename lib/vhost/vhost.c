@@ -1497,21 +1497,17 @@ new_connection(int vid)
 }
 
 static void
-destroy_connection(int vid)
+destroy_connection_cb(void *arg)
 {
 	struct spdk_vhost_session *vsession;
 
-	/* we might have forcefully started the session without DPDK knowing
-	 * about it, so forcefully stop it now. It'll simply return if the
-	 * session is not started.
-	 */
-	stop_device(vid);
-
 	pthread_mutex_lock(&g_vhost_mutex);
-	vsession = vhost_session_find_by_vid(vid);
+	vsession = vhost_session_find_by_vid(g_dpdk_info.vid);
 	if (vsession == NULL) {
-		SPDK_ERRLOG("Couldn't find session with vid %d.\n", vid);
+		SPDK_ERRLOG("Couldn't find session with vid %d.\n",
+			    g_dpdk_info.vid);
 		pthread_mutex_unlock(&g_vhost_mutex);
+		unblock_dpdk_thread(-ENODEV);
 		return;
 	}
 
@@ -1519,6 +1515,22 @@ destroy_connection(int vid)
 	free(vsession->name);
 	free(vsession);
 	pthread_mutex_unlock(&g_vhost_mutex);
+	unblock_dpdk_thread(0);
+}
+
+
+static void
+destroy_connection(int vid)
+{
+	/* we might have forcefully started the session without DPDK knowing
+	 * about it, so forcefully stop it now. It'll simply return if the
+	 * session is not started.
+	 */
+	stop_device(vid);
+
+	g_dpdk_info.vid = vid;
+	spdk_thread_send_msg(g_vhost_init_thread, destroy_connection_cb, NULL);
+	block_dpdk_thread();
 }
 
 const struct vhost_device_ops g_dpdk_vhost_ops = {
