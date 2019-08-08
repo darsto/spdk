@@ -1257,7 +1257,7 @@ alloc_task_pool(struct spdk_vhost_scsi_session *svsession)
 			SPDK_ERRLOG("%s: virtuque %"PRIu16" is too big. (size = %"PRIu32", max = %"PRIu32")\n",
 				    vsession->name, i, task_cnt, SPDK_VHOST_MAX_VQ_SIZE);
 			free_task_pool(svsession);
-			return -1;
+			return -ERANGE;
 		}
 		vq->tasks = spdk_zmalloc(sizeof(struct spdk_vhost_scsi_task) * task_cnt,
 					 SPDK_CACHE_LINE_SIZE, NULL,
@@ -1266,7 +1266,7 @@ alloc_task_pool(struct spdk_vhost_scsi_session *svsession)
 			SPDK_ERRLOG("%s: failed to allocate %"PRIu32" tasks for virtqueue %"PRIu16"\n",
 				    vsession->name, task_cnt, i);
 			free_task_pool(svsession);
-			return -1;
+			return -ENOMEM;
 		}
 
 		for (j = 0; j < task_cnt; j++) {
@@ -1294,7 +1294,7 @@ vhost_scsi_start_cb(void *arg)
 	for (i = VIRTIO_SCSI_REQUESTQ; i < vsession->max_queues; i++) {
 		if (vsession->virtqueue[i].vring.desc == NULL) {
 			SPDK_ERRLOG("%s: queue %"PRIu32" is empty\n", vsession->name, i);
-			rc = -1;
+			rc = -EFAULT;
 			goto out;
 		}
 	}
