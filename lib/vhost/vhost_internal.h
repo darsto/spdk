@@ -236,6 +236,8 @@ struct spdk_vhost_dev_backend {
 	int (*remove_device)(struct spdk_vhost_dev *vdev);
 };
 
+extern struct spdk_thread *g_vhost_init_thread;
+
 void *vhost_gpa_to_vva(struct spdk_vhost_session *vsession, uint64_t addr, uint64_t len);
 
 uint16_t vhost_vq_avail_ring_get(struct spdk_vhost_virtqueue *vq, uint16_t *reqs,
@@ -351,6 +353,46 @@ struct vhost_sock_ops {
 	void (*set_config)(void *unused);
 };
 
+struct vhost_sock_queue_info {
+	struct rte_vhost_vring vring;
+	uint16_t last_avail_idx;
+	uint16_t last_used_idx;
+};
+
+/** Data exchanged between socket pthread and SPDK threads */
+struct vhost_sock_info {
+	/** ID of the currently modified session */
+	int vid;
+
+	union {
+		struct {
+			char path[PATH_MAX];
+		} connect;
+		struct {
+			uint64_t negotiated_features;
+			struct rte_vhost_memory *mem;
+			struct vhost_sock_queue_info queue[SPDK_VHOST_MAX_VQUEUES];
+		} start, stop;
+		struct {
+			uint8_t *buf;
+			uint32_t offset;
+			uint32_t size;
+			uint32_t flags;
+		} config;
+	} u;
+
+	/**
+	 * DPDK calls our callbacks synchronously but the work those
+	 * callbacks perform needs to be async. We'll just wait on the
+	 * socket pthread until our async work is done.
+	 */
+	sem_t sem;
+
+	/** Return code for the current callback */
+	int response;
+};
+
+extern struct vhost_sock_info g_vhost_sock_info;
 extern struct vhost_sock_ops g_vhost_sock_ops;
 
 /**
@@ -388,7 +430,7 @@ void vhost_session_stop_done(struct spdk_vhost_session *vsession, int response);
  * \param vsession vhost session
  * \param response return code
  */
-void vhost_session_dpdk_cb_done(struct spdk_vhost_session *vsession, int response);
+void vhost_session_sock_cb_done(int response);
 
 struct spdk_vhost_session *vhost_session_find_by_vid(int vid);
 void vhost_session_install_rte_compat_hooks(int vid);
