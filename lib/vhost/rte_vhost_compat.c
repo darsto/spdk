@@ -252,7 +252,7 @@ destroy_connection(int vid)
 	block_dpdk_thread();
 }
 
-static int __attribute__((unused))
+static int
 get_config(int vid, uint8_t *config, uint32_t size)
 {
 	g_vhost_sock_info.u.config.buf = config;
@@ -265,7 +265,7 @@ get_config(int vid, uint8_t *config, uint32_t size)
 	return g_vhost_sock_info.response;
 }
 
-static int __attribute__((unused))
+static int
 set_config(int vid, uint8_t *config, uint32_t offset, uint32_t size, uint32_t flags)
 {
 	g_vhost_sock_info.u.config.buf = config;
@@ -358,29 +358,20 @@ spdk_extern_vhost_pre_msg_handler(int vid, void *_msg)
 	case VHOST_USER_GET_CONFIG: {
 		int rc = 0;
 
-		spdk_vhost_lock();
-		if (vsession->vdev->backend->get_config) {
-			rc = vsession->vdev->backend->get_config(vsession,
-				msg->payload.cfg.region, msg->payload.cfg.size);
-			if (rc != 0) {
-				msg->size = 0;
-			}
+		rc = get_config(vid, msg->payload.cfg.region, msg->payload.cfg.size);
+		if (rc != 0) {
+			msg->size = 0;
 		}
-		spdk_vhost_unlock();
 
 		return RTE_VHOST_MSG_RESULT_REPLY;
 	}
 	case VHOST_USER_SET_CONFIG: {
 		int rc = 0;
 
-		spdk_vhost_lock();
-		if (vsession->vdev->backend->set_config) {
-			rc = vsession->vdev->backend->set_config(vsession,
-				msg->payload.cfg.region, msg->payload.cfg.offset,
-				msg->payload.cfg.size, msg->payload.cfg.flags);
-		}
-		spdk_vhost_unlock();
-
+		rc = set_config(vid, msg->payload.cfg.region,
+				msg->payload.cfg.offset,
+				msg->payload.cfg.size,
+				msg->payload.cfg.flags);
 		return rc == 0 ? RTE_VHOST_MSG_RESULT_OK : RTE_VHOST_MSG_RESULT_ERR;
 	}
 	default:
