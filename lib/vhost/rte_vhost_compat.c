@@ -134,6 +134,8 @@ unregister_vhost_mem(struct rte_vhost_memory *mem)
 
 }
 
+static struct rte_vhost_user_extern_ops g_extern_vhost_ops;
+
 static int
 new_connection(int vid)
 {
@@ -143,14 +145,17 @@ new_connection(int vid)
 		return -EFAULT;
 	}
 
+#ifndef SPDK_CONFIG_VHOST_INTERNAL_LIB
+	if (rte_vhost_extern_callback_register(vid, &g_extern_vhost_ops, NULL)) {
+		SPDK_ERRLOG("rte_vhost_extern_callback_register() failed for vid = %d\n",
+			    vid);
+		return -EFAULT;
+	}
+#endif
+
 	spdk_thread_send_msg(g_vhost_init_thread,
 			     g_vhost_sock_ops.new_session, NULL);
 	block_dpdk_thread();
-
-	if (g_vhost_sock_info.response == 0) {
-		vhost_session_install_rte_compat_hooks(vid);
-	}
-
 	return g_vhost_sock_info.response;
 }
 
@@ -433,23 +438,10 @@ spdk_extern_vhost_post_msg_handler(int vid, void *_msg)
 	return RTE_VHOST_MSG_RESULT_NOT_HANDLED;
 }
 
-struct rte_vhost_user_extern_ops g_extern_vhost_ops = {
+static struct rte_vhost_user_extern_ops g_extern_vhost_ops = {
 	.pre_msg_handle = spdk_extern_vhost_pre_msg_handler,
 	.post_msg_handle = spdk_extern_vhost_post_msg_handler,
 };
-
-void
-vhost_session_install_rte_compat_hooks(int vid)
-{
-	int rc;
-
-	rc = rte_vhost_extern_callback_register(vid, &g_extern_vhost_ops, NULL);
-	if (rc != 0) {
-		SPDK_ERRLOG("rte_vhost_extern_callback_register() failed for vid = %d\n",
-			    vid);
-		return;
-	}
-}
 
 void
 vhost_dev_install_rte_compat_hooks(const char *socket_path)
@@ -462,15 +454,10 @@ vhost_dev_install_rte_compat_hooks(const char *socket_path)
 }
 
 #else /* SPDK_CONFIG_VHOST_INTERNAL_LIB */
-void
-vhost_session_install_rte_compat_hooks(int vid)
-{
-	/* nothing to do. all the changes are already incorporated into rte_vhost */
-}
 
 void
 vhost_dev_install_rte_compat_hooks(const char *socket_path)
 {
-	/* nothing to do */
+	/* nothing to do. all the changes are already incorporated into rte_vhost */
 }
 #endif
