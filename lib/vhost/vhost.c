@@ -1501,7 +1501,11 @@ destroy_connection(int vid)
 {
 	struct spdk_vhost_session *vsession;
 
-
+	/* we might have forcefully started the session without DPDK knowing
+	 * about it, so forcefully stop it now. It'll simply return if the
+	 * session is not started.
+	 */
+	stop_device(vid);
 
 	pthread_mutex_lock(&g_vhost_mutex);
 	vsession = vhost_session_find_by_vid(vid);
@@ -1509,10 +1513,6 @@ destroy_connection(int vid)
 		SPDK_ERRLOG("Couldn't find session with vid %d.\n", vid);
 		pthread_mutex_unlock(&g_vhost_mutex);
 		return;
-	}
-
-	if (vsession->started) {
-		stop_device(vid);
 	}
 
 	TAILQ_REMOVE(&vsession->vdev->vsessions, vsession, tailq);
