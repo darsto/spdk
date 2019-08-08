@@ -1132,9 +1132,8 @@ stop_device_cb(void *arg)
 	}
 
 	if (!vsession->started) {
-		/* already stopped, nothing to do */
 		pthread_mutex_unlock(&g_vhost_mutex);
-		vhost_session_stop_done(vsession, 0);
+		vhost_session_stop_done(vsession, -EALREADY);
 		return;
 	}
 
@@ -1151,7 +1150,9 @@ stop_device(int vid)
 	spdk_thread_send_msg(g_vhost_init_thread, stop_device_cb, NULL);
 	block_dpdk_thread();
 
-	if (g_dpdk_info.response != 0) {
+	if (g_dpdk_info.response == -EALREADY) {
+		return;
+	} else if (g_dpdk_info.response != 0) {
 		SPDK_ERRLOG("Couldn't stop device with vid %d.\n", vid);
 		return;
 	}
@@ -1192,7 +1193,7 @@ start_device_cb(void *arg)
 	if (vsession->started) {
 		/* already started, nothing to do */
 		pthread_mutex_unlock(&g_vhost_mutex);
-		vhost_session_start_done(vsession, 0);
+		vhost_session_start_done(vsession, -EALREADY);
 		return;
 	}
 
@@ -1282,7 +1283,9 @@ start_device(int vid)
 	spdk_thread_send_msg(g_vhost_init_thread, start_device_cb, NULL);
 	block_dpdk_thread();
 
-	if (g_dpdk_info.response != 0) {
+	if (g_dpdk_info.response == -EALREADY) {
+		return 0;
+	} else if (g_dpdk_info.response != 0) {
 		unregister_vhost_mem(g_dpdk_info.u.start.mem);
 		free(g_dpdk_info.u.start.mem);
 	}
@@ -1497,6 +1500,7 @@ static void
 destroy_connection(int vid)
 {
 	struct spdk_vhost_session *vsession;
+
 
 
 	pthread_mutex_lock(&g_vhost_mutex);
