@@ -48,9 +48,254 @@
 
 #include "spdk_internal/vhost_user.h"
 
-#ifndef SPDK_CONFIG_VHOST_INTERNAL_LIB
-extern const struct vhost_device_ops g_dpdk_vhost_ops;
+const struct vhost_device_ops g_dpdk_vhost_ops;
 
+void
+unblock_dpdk_thread(int rc)
+{
+	g_vhost_sock_info.response = rc;
+	sem_post(&g_vhost_sock_info.sem);
+}
+
+static void
+block_dpdk_thread(void)
+{
+	struct timespec timeout;
+	int rc;
+
+	clock_gettime(CLOCK_REALTIME, &timeout);
+	timeout.tv_sec += 3;
+	rc = sem_timedwait(&g_vhost_sock_info.sem, &timeout);
+	if (rc != 0) {
+		SPDK_ERRLOG("timeout\n");
+		sem_wait(&g_vhost_sock_info.sem);
+	}
+}
+
+#define SHIFT_2MB	21
+#define SIZE_2MB	(1ULL << SHIFT_2MB)
+#define FLOOR_2MB(x)	(((uintptr_t)x) / SIZE_2MB) << SHIFT_2MB
+#define CEIL_2MB(x)	((((uintptr_t)x) + SIZE_2MB - 1) / SIZE_2MB) << SHIFT_2MB
+
+static void
+register_vhost_mem(struct rte_vhost_memory *mem)
+{
+	struct rte_vhost_mem_region *region;
+	uint32_t i;
+	uint64_t previous_start = UINT64_MAX;
+
+	for (i = 0; i < mem->nregions; i++) {
+		uint64_t start, end, len;
+		region = &mem->regions[i];
+		start = FLOOR_2MB(region->mmap_addr);
+		end = CEIL_2MB(region->mmap_addr + region->mmap_size);
+		if (start == previous_start) {
+			start += (size_t) SIZE_2MB;
+		}
+		previous_start = start;
+		len = end - start;
+		SPDK_INFOLOG(SPDK_LOG_VHOST, "Registering VM memory for vtophys translation - 0x%jx len:0x%jx\n",
+			     start, len);
+
+		if (spdk_mem_register((void *)start, len) != 0) {
+			SPDK_WARNLOG("Failed to register memory region %"PRIu32". Future vtophys translation might fail.\n",
+				     i);
+			continue;
+		}
+	}
+}
+
+static void
+unregister_vhost_mem(struct rte_vhost_memory *mem)
+{
+	struct rte_vhost_mem_region *region;
+	uint32_t i;
+	uint64_t previous_start = UINT64_MAX;
+
+	for (i = 0; i < mem->nregions; i++) {
+		uint64_t start, end, len;
+		region = &mem->regions[i];
+		start = FLOOR_2MB(region->mmap_addr);
+		end = CEIL_2MB(region->mmap_addr + region->mmap_size);
+		if (start == previous_start) {
+			start += (size_t) SIZE_2MB;
+		}
+		previous_start = start;
+		len = end - start;
+
+		if (spdk_vtophys((void *) start, NULL) == SPDK_VTOPHYS_ERROR) {
+			continue; /* region has not been registered */
+		}
+
+		if (spdk_mem_unregister((void *)start, len) != 0) {
+			assert(false);
+		}
+	}
+
+}
+
+static int
+new_connection(int vid)
+{
+	g_vhost_sock_info.vid = vid;
+	if (rte_vhost_get_ifname(vid, g_vhost_sock_info.u.connect.path, PATH_MAX) < 0) {
+		SPDK_ERRLOG("rte_vhost_get_ifname() failed for vid = %d\n", vid);
+		return -EFAULT;
+	}
+
+	spdk_thread_send_msg(g_vhost_init_thread,
+			     g_vhost_sock_ops.new_session, NULL);
+	block_dpdk_thread();
+
+	if (g_vhost_sock_info.response == 0) {
+		vhost_session_install_rte_compat_hooks(vid);
+	}
+
+	return g_vhost_sock_info.response;
+}
+
+static int
+start_device(int vid)
+{
+	uint16_t i;
+
+	g_vhost_sock_info.vid = vid;
+	for (i = 0; i < SPDK_VHOST_MAX_VQUEUES; i++) {
+		struct vhost_sock_queue_info *q_info = &g_vhost_sock_info.u.start.queue[i];
+
+		if (rte_vhost_get_vhost_vring(vid, i, &q_info->vring)) {
+			continue;
+		}
+
+		if (rte_vhost_get_vring_base(vid, i,
+					     &q_info->last_avail_idx,
+					     &q_info->last_used_idx)) {
+			q_info->vring.desc = NULL;
+		}
+	}
+
+	if (rte_vhost_get_negotiated_features(vid, &g_vhost_sock_info.u.start.negotiated_features) != 0) {
+		SPDK_ERRLOG("vhost device %d: Failed to get negotiated driver features\n", vid);
+		return -1;
+	}
+
+	if (rte_vhost_get_mem_table(vid, &g_vhost_sock_info.u.start.mem) != 0) {
+		SPDK_ERRLOG("vhost device %d: Failed to get guest memory table\n", vid);
+		return -1;
+	}
+
+	/* This can be an extremely long, synchronous operation, so do it on this
+	 * DPDK thread rather than the SPDK's init thread which could be already
+	 * busy with handling other I/Os.
+	 */
+	register_vhost_mem(g_vhost_sock_info.u.start.mem);
+
+	spdk_thread_send_msg(g_vhost_init_thread,
+			     g_vhost_sock_ops.start_session, NULL);
+	block_dpdk_thread();
+
+	if (g_vhost_sock_info.response == -EALREADY) {
+		return 0;
+	} else if (g_vhost_sock_info.response != 0) {
+		unregister_vhost_mem(g_vhost_sock_info.u.start.mem);
+		free(g_vhost_sock_info.u.start.mem);
+	}
+
+	return g_vhost_sock_info.response;
+}
+
+static void
+stop_device(int vid)
+{
+	uint16_t i;
+
+	g_vhost_sock_info.vid = vid;
+	spdk_thread_send_msg(g_vhost_init_thread,
+			     g_vhost_sock_ops.stop_session, NULL);
+	block_dpdk_thread();
+
+	if (g_vhost_sock_info.response == -EALREADY) {
+		return;
+	} else if (g_vhost_sock_info.response != 0) {
+		SPDK_ERRLOG("Couldn't stop device with vid %d.\n", vid);
+		return;
+	}
+
+	for (i = 0; i < SPDK_VHOST_MAX_VQUEUES; i++) {
+		struct vhost_sock_queue_info *q_info = &g_vhost_sock_info.u.stop.queue[i];
+
+		if (q_info->vring.desc == NULL) {
+			continue;
+		}
+
+		rte_vhost_set_vring_base(vid, i,
+					 q_info->last_avail_idx,
+					 q_info->last_used_idx);
+	}
+
+	unregister_vhost_mem(g_vhost_sock_info.u.stop.mem);
+	free(g_vhost_sock_info.u.stop.mem);
+}
+
+static void
+destroy_connection(int vid)
+{
+	/* we might have forcefully started the session without DPDK knowing
+	 * about it, so forcefully stop it now. It'll simply return if the
+	 * session is not started.
+	 */
+	stop_device(vid);
+
+	g_vhost_sock_info.vid = vid;
+	spdk_thread_send_msg(g_vhost_init_thread,
+			     g_vhost_sock_ops.delete_session, NULL);
+	block_dpdk_thread();
+}
+
+static int __attribute__((unused))
+get_config(int vid, uint8_t *config, uint32_t size)
+{
+	g_vhost_sock_info.u.config.buf = config;
+	g_vhost_sock_info.u.config.size = size;
+
+	spdk_thread_send_msg(g_vhost_init_thread,
+			     g_vhost_sock_ops.get_config, NULL);
+	block_dpdk_thread();
+
+	return g_vhost_sock_info.response;
+}
+
+static int __attribute__((unused))
+set_config(int vid, uint8_t *config, uint32_t offset, uint32_t size, uint32_t flags)
+{
+	g_vhost_sock_info.u.config.buf = config;
+	g_vhost_sock_info.u.config.offset = offset;
+	g_vhost_sock_info.u.config.size = size;
+	g_vhost_sock_info.u.config.flags = flags;
+
+	spdk_thread_send_msg(g_vhost_init_thread,
+			     g_vhost_sock_ops.set_config, NULL);
+	block_dpdk_thread();
+
+	return g_vhost_sock_info.response;
+}
+
+const struct vhost_device_ops g_dpdk_vhost_ops = {
+	.new_device =  start_device,
+	.destroy_device = stop_device,
+	.new_connection = new_connection,
+	.destroy_connection = destroy_connection,
+#ifdef SPDK_CONFIG_VHOST_INTERNAL_LIB
+	.get_config = get_config,
+	.set_config = set_config,
+	.vhost_nvme_admin_passthrough = vhost_nvme_admin_passthrough,
+	.vhost_nvme_set_cq_call = vhost_nvme_set_cq_call,
+	.vhost_nvme_get_cap = vhost_nvme_get_cap,
+	.vhost_nvme_set_bar_mr = vhost_nvme_set_bar_mr,
+#endif
+};
+
+#ifndef SPDK_CONFIG_VHOST_INTERNAL_LIB
 static enum rte_vhost_msg_result
 spdk_extern_vhost_pre_msg_handler(int vid, void *_msg)
 {

@@ -100,6 +100,9 @@ DEFINE_STUB(vhost_nvme_admin_passthrough, int, (int vid, void *cmd, void *cqe, v
 DEFINE_STUB(vhost_nvme_set_cq_call, int, (int vid, uint16_t qid, int fd), 0);
 DEFINE_STUB(vhost_nvme_set_bar_mr, int, (int vid, void *bar, uint64_t bar_size), 0);
 DEFINE_STUB(vhost_nvme_get_cap, int, (int vid, uint64_t *cap), 0);
+DEFINE_STUB_V(unblock_dpdk_thread, (int rc));
+
+const struct vhost_device_ops g_dpdk_vhost_ops;
 
 void *
 spdk_call_unaffinitized(void *cb(void *arg), void *arg)

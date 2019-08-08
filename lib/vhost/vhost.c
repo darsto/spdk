@@ -51,52 +51,12 @@ static struct spdk_cpuset *g_tmp_cpuset;
 /* Path to folder where character device will be created. Can be set by user. */
 static char dev_dirname[PATH_MAX] = "";
 
+struct vhost_sock_info g_vhost_sock_info;
+
 /* Thread performing all vhost management operations */
-static struct spdk_thread *g_vhost_init_thread;
+struct spdk_thread *g_vhost_init_thread;
 
 static spdk_vhost_fini_cb g_fini_cpl_cb;
-
-struct vhost_dpdk_queue_info {
-	struct rte_vhost_vring vring;
-	uint16_t last_avail_idx;
-	uint16_t last_used_idx;
-};
-
-/** Data exchanged between DPDK and SPDK threads */
-static struct vhost_dpdk_info {
-	/** ID of the currently modified session */
-	int vid;
-
-	union {
-		struct {
-			char path[PATH_MAX];
-		} connect;
-		struct {
-			uint64_t negotiated_features;
-			struct rte_vhost_memory *mem;
-			struct vhost_dpdk_queue_info queue[SPDK_VHOST_MAX_VQUEUES];
-		} start, stop;
-		struct {
-			uint8_t *buf;
-			uint32_t offset;
-			uint32_t size;
-			uint32_t flags;
-		} config;
-	} u;
-
-	/**
-	 * DPDK calls our callbacks synchronously but the work those callbacks
-	 * perform needs to be async. Luckily, all DPDK callbacks are called on
-	 * a DPDK-internal pthread, so we'll just wait on a semaphore in there.
-	 */
-	sem_t sem;
-
-	/** Return code for the current DPDK callback */
-	int response;
-} g_dpdk_info;
-
-/** DPDK callbacks */
-const struct vhost_device_ops g_dpdk_vhost_ops;
 
 struct vhost_session_fn_ctx {
 	/** Device pointer obtained before enqueuing the event */
@@ -117,9 +77,6 @@ struct vhost_session_fn_ctx {
 	/** Custom user context */
 	void *user_ctx;
 };
-
-/** DPDK callbacks */
-const struct vhost_device_ops g_dpdk_vhost_ops;
 
 static TAILQ_HEAD(, spdk_vhost_dev) g_vhost_devices = TAILQ_HEAD_INITIALIZER(
 			g_vhost_devices);
@@ -566,68 +523,6 @@ vhost_session_find_by_vid(int vid)
 	return NULL;
 }
 
-#define SHIFT_2MB	21
-#define SIZE_2MB	(1ULL << SHIFT_2MB)
-#define FLOOR_2MB(x)	(((uintptr_t)x) / SIZE_2MB) << SHIFT_2MB
-#define CEIL_2MB(x)	((((uintptr_t)x) + SIZE_2MB - 1) / SIZE_2MB) << SHIFT_2MB
-
-static void
-register_vhost_mem(struct rte_vhost_memory *mem)
-{
-	struct rte_vhost_mem_region *region;
-	uint32_t i;
-	uint64_t previous_start = UINT64_MAX;
-
-	for (i = 0; i < mem->nregions; i++) {
-		uint64_t start, end, len;
-		region = &mem->regions[i];
-		start = FLOOR_2MB(region->mmap_addr);
-		end = CEIL_2MB(region->mmap_addr + region->mmap_size);
-		if (start == previous_start) {
-			start += (size_t) SIZE_2MB;
-		}
-		previous_start = start;
-		len = end - start;
-		SPDK_INFOLOG(SPDK_LOG_VHOST, "Registering VM memory for vtophys translation - 0x%jx len:0x%jx\n",
-			     start, len);
-
-		if (spdk_mem_register((void *)start, len) != 0) {
-			SPDK_WARNLOG("Failed to register memory region %"PRIu32". Future vtophys translation might fail.\n",
-				     i);
-			continue;
-		}
-	}
-}
-
-static void
-unregister_vhost_mem(struct rte_vhost_memory *mem)
-{
-	struct rte_vhost_mem_region *region;
-	uint32_t i;
-	uint64_t previous_start = UINT64_MAX;
-
-	for (i = 0; i < mem->nregions; i++) {
-		uint64_t start, end, len;
-		region = &mem->regions[i];
-		start = FLOOR_2MB(region->mmap_addr);
-		end = CEIL_2MB(region->mmap_addr + region->mmap_size);
-		if (start == previous_start) {
-			start += (size_t) SIZE_2MB;
-		}
-		previous_start = start;
-		len = end - start;
-
-		if (spdk_vtophys((void *) start, NULL) == SPDK_VTOPHYS_ERROR) {
-			continue; /* region has not been registered */
-		}
-
-		if (spdk_mem_unregister((void *)start, len) != 0) {
-			assert(false);
-		}
-	}
-
-}
-
 struct spdk_vhost_dev *
 spdk_vhost_dev_next(struct spdk_vhost_dev *vdev)
 {
@@ -697,6 +592,8 @@ _start_rte_driver(void *arg)
 
 	return path;
 }
+
+extern const struct vhost_device_ops g_dpdk_vhost_ops;
 
 int
 vhost_dev_register(struct spdk_vhost_dev *vdev, const char *name, const char *mask_str,
@@ -918,28 +815,6 @@ _get_current_poll_group(void)
 	return NULL;
 }
 
-static void
-unblock_dpdk_thread(int rc)
-{
-	g_dpdk_info.response = rc;
-	sem_post(&g_dpdk_info.sem);
-}
-
-static void
-block_dpdk_thread(void)
-{
-	struct timespec timeout;
-	int rc;
-
-	clock_gettime(CLOCK_REALTIME, &timeout);
-	timeout.tv_sec += 3;
-	rc = sem_timedwait(&g_dpdk_info.sem, &timeout);
-	if (rc != 0) {
-		SPDK_ERRLOG("timeout\n");
-		sem_wait(&g_dpdk_info.sem);
-	}
-}
-
 void
 vhost_session_start_done(struct spdk_vhost_session *vsession, int response)
 {
@@ -972,10 +847,10 @@ vhost_session_stop_done(struct spdk_vhost_session *vsession, int response)
 		assert(vsession->vdev->active_session_num > 0);
 		vsession->vdev->active_session_num--;
 
-		g_dpdk_info.u.stop.mem = vsession->mem;
+		g_vhost_sock_info.u.stop.mem = vsession->mem;
 		for (i = 0; i < SPDK_VHOST_MAX_VQUEUES; i++) {
 			struct spdk_vhost_virtqueue *q = &vsession->virtqueue[i];
-			struct vhost_dpdk_queue_info *q_info = &g_dpdk_info.u.stop.queue[i];
+			struct vhost_sock_queue_info *q_info = &g_vhost_sock_info.u.stop.queue[i];
 
 			if (q->vring.desc == NULL || q->vring.size == 0) {
 				memset(q_info, 0, sizeof(*q_info));
@@ -1123,9 +998,9 @@ stop_device_cb(void *arg)
 	struct spdk_vhost_session *vsession;
 
 	pthread_mutex_lock(&g_vhost_mutex);
-	vsession = vhost_session_find_by_vid(g_dpdk_info.vid);
+	vsession = vhost_session_find_by_vid(g_vhost_sock_info.vid);
 	if (vsession == NULL) {
-		SPDK_ERRLOG("Couldn't find session with vid %d.\n", g_dpdk_info.vid);
+		SPDK_ERRLOG("Couldn't find session with vid %d.\n", g_vhost_sock_info.vid);
 		pthread_mutex_unlock(&g_vhost_mutex);
 		vhost_session_stop_done(vsession, -ENODEV);
 		return;
@@ -1142,39 +1017,6 @@ stop_device_cb(void *arg)
 }
 
 static void
-stop_device(int vid)
-{
-	uint16_t i;
-
-	g_dpdk_info.vid = vid;
-	spdk_thread_send_msg(g_vhost_init_thread,
-			     g_vhost_sock_ops.stop_session, NULL);
-	block_dpdk_thread();
-
-	if (g_dpdk_info.response == -EALREADY) {
-		return;
-	} else if (g_dpdk_info.response != 0) {
-		SPDK_ERRLOG("Couldn't stop device with vid %d.\n", vid);
-		return;
-	}
-
-	for (i = 0; i < SPDK_VHOST_MAX_VQUEUES; i++) {
-		struct vhost_dpdk_queue_info *q_info = &g_dpdk_info.u.stop.queue[i];
-
-		if (q_info->vring.desc == NULL) {
-			continue;
-		}
-
-		rte_vhost_set_vring_base(vid, i,
-					 q_info->last_avail_idx,
-					 q_info->last_used_idx);
-	}
-
-	unregister_vhost_mem(g_dpdk_info.u.stop.mem);
-	free(g_dpdk_info.u.stop.mem);
-}
-
-static void
 start_device_cb(void *arg)
 {
 	struct spdk_vhost_dev *vdev;
@@ -1182,9 +1024,9 @@ start_device_cb(void *arg)
 	uint16_t i;
 
 	pthread_mutex_lock(&g_vhost_mutex);
-	vsession = vhost_session_find_by_vid(g_dpdk_info.vid);
+	vsession = vhost_session_find_by_vid(g_vhost_sock_info.vid);
 	if (vsession == NULL) {
-		SPDK_ERRLOG("Couldn't find session with vid %d.\n", g_dpdk_info.vid);
+		SPDK_ERRLOG("Couldn't find session with vid %d.\n", g_vhost_sock_info.vid);
 		pthread_mutex_unlock(&g_vhost_mutex);
 		vhost_session_start_done(vsession, -ENODEV);
 		return;
@@ -1202,7 +1044,7 @@ start_device_cb(void *arg)
 	memset(vsession->virtqueue, 0, sizeof(vsession->virtqueue));
 	for (i = 0; i < SPDK_VHOST_MAX_VQUEUES; i++) {
 		struct spdk_vhost_virtqueue *q = &vsession->virtqueue[i];
-		struct vhost_dpdk_queue_info *q_info = &g_dpdk_info.u.start.queue[i];
+		struct vhost_sock_queue_info *q_info = &g_vhost_sock_info.u.start.queue[i];
 
 		q->vring_idx = -1;
 		if (q_info->vring.desc == NULL || q_info->vring.size == 0) {
@@ -1219,8 +1061,8 @@ start_device_cb(void *arg)
 		vsession->max_queues = i + 1;
 	}
 
-	vsession->negotiated_features = g_dpdk_info.u.start.negotiated_features;
-	vsession->mem = g_dpdk_info.u.start.mem;
+	vsession->negotiated_features = g_vhost_sock_info.u.start.negotiated_features;
+	vsession->mem = g_vhost_sock_info.u.start.mem;
 
 	/*
 	 * Not sure right now but this look like some kind of QEMU bug and guest IO
@@ -1245,57 +1087,6 @@ start_device_cb(void *arg)
 	pthread_mutex_unlock(&g_vhost_mutex);
 }
 
-static int
-start_device(int vid)
-{
-	uint16_t i;
-
-	g_dpdk_info.vid = vid;
-	for (i = 0; i < SPDK_VHOST_MAX_VQUEUES; i++) {
-		struct vhost_dpdk_queue_info *q_info = &g_dpdk_info.u.start.queue[i];
-
-		if (rte_vhost_get_vhost_vring(vid, i, &q_info->vring)) {
-			continue;
-		}
-
-		if (rte_vhost_get_vring_base(vid, i,
-					     &q_info->last_avail_idx,
-					     &q_info->last_used_idx)) {
-			q_info->vring.desc = NULL;
-		}
-	}
-
-	if (rte_vhost_get_negotiated_features(vid, &g_dpdk_info.u.start.negotiated_features) != 0) {
-		SPDK_ERRLOG("vhost device %d: Failed to get negotiated driver features\n", vid);
-		return -1;
-	}
-
-	if (rte_vhost_get_mem_table(vid, &g_dpdk_info.u.start.mem) != 0) {
-		SPDK_ERRLOG("vhost device %d: Failed to get guest memory table\n", vid);
-		return -1;
-	}
-
-	/* This can be an extremely long, synchronous operation, so do it on this
-	 * DPDK thread rather than the SPDK's init thread which could be already
-	 * busy with handling other I/Os.
-	 */
-	register_vhost_mem(g_dpdk_info.u.start.mem);
-
-	spdk_thread_send_msg(g_vhost_init_thread,
-			     g_vhost_sock_ops.start_session, NULL);
-	block_dpdk_thread();
-
-	if (g_dpdk_info.response == -EALREADY) {
-		return 0;
-	} else if (g_dpdk_info.response != 0) {
-		unregister_vhost_mem(g_dpdk_info.u.start.mem);
-		free(g_dpdk_info.u.start.mem);
-	}
-
-	return g_dpdk_info.response;
-}
-
-#ifdef SPDK_CONFIG_VHOST_INTERNAL_LIB
 static void
 get_config_cb(void *arg)
 {
@@ -1304,9 +1095,9 @@ get_config_cb(void *arg)
 	int rc = -ENOSYS;
 
 	pthread_mutex_lock(&g_vhost_mutex);
-	vsession = vhost_session_find_by_vid(g_dpdk_info.vid);
+	vsession = vhost_session_find_by_vid(g_vhost_sock_info.vid);
 	if (vsession == NULL) {
-		SPDK_ERRLOG("Couldn't find session with vid %d.\n", g_dpdk_info.vid);
+		SPDK_ERRLOG("Couldn't find session with vid %d.\n", g_vhost_sock_info.vid);
 		pthread_mutex_unlock(&g_vhost_mutex);
 		unblock_dpdk_thread(-ENODEV);
 		return;
@@ -1315,24 +1106,12 @@ get_config_cb(void *arg)
 	vdev = vsession->vdev;
 	if (vdev->backend->get_config) {
 		rc = vdev->backend->get_config(vsession,
-					       g_dpdk_info.u.config.buf,
-					       g_dpdk_info.u.config.size);
+					       g_vhost_sock_info.u.config.buf,
+					       g_vhost_sock_info.u.config.size);
 	}
 
 	pthread_mutex_unlock(&g_vhost_mutex);
 	unblock_dpdk_thread(rc);
-}
-
-static int
-get_config(int vid, uint8_t *config, uint32_t size)
-{
-	g_dpdk_info.u.config.buf = config;
-	g_dpdk_info.u.config.size = size;
-
-	spdk_thread_send_msg(g_vhost_init_thread, get_config_cb, NULL);
-	block_dpdk_thread();
-
-	return g_dpdk_info.response;
 }
 
 static void
@@ -1343,9 +1122,9 @@ set_config_cb(void *arg)
 	int rc = -ENOSYS;
 
 	pthread_mutex_lock(&g_vhost_mutex);
-	vsession = vhost_session_find_by_vid(g_dpdk_info.vid);
+	vsession = vhost_session_find_by_vid(g_vhost_sock_info.vid);
 	if (vsession == NULL) {
-		SPDK_ERRLOG("Couldn't find session with vid %d.\n", g_dpdk_info.vid);
+		SPDK_ERRLOG("Couldn't find session with vid %d.\n", g_vhost_sock_info.vid);
 		pthread_mutex_unlock(&g_vhost_mutex);
 		unblock_dpdk_thread(-ENODEV);
 		return;
@@ -1354,30 +1133,15 @@ set_config_cb(void *arg)
 	vdev = vsession->vdev;
 	if (vdev->backend->set_config) {
 		rc = vdev->backend->set_config(vsession,
-					       g_dpdk_info.u.config.buf,
-					       g_dpdk_info.u.config.offset,
-					       g_dpdk_info.u.config.size,
-					       g_dpdk_info.u.config.flags);
+					       g_vhost_sock_info.u.config.buf,
+					       g_vhost_sock_info.u.config.offset,
+					       g_vhost_sock_info.u.config.size,
+					       g_vhost_sock_info.u.config.flags);
 	}
 
 	pthread_mutex_unlock(&g_vhost_mutex);
 	unblock_dpdk_thread(rc);
 }
-
-static int
-set_config(int vid, uint8_t *config, uint32_t offset, uint32_t size, uint32_t flags)
-{
-	g_dpdk_info.u.config.buf = config;
-	g_dpdk_info.u.config.offset = offset;
-	g_dpdk_info.u.config.size = size;
-	g_dpdk_info.u.config.flags = flags;
-
-	spdk_thread_send_msg(g_vhost_init_thread, set_config_cb, NULL);
-	block_dpdk_thread();
-
-	return g_dpdk_info.response;
-}
-#endif
 
 int
 spdk_vhost_set_socket_path(const char *basename)
@@ -1428,10 +1192,10 @@ new_connection_cb(void *arg)
 	int rc = 0;
 
 	pthread_mutex_lock(&g_vhost_mutex);
-	vdev = spdk_vhost_dev_find(g_dpdk_info.u.connect.path);
+	vdev = spdk_vhost_dev_find(g_vhost_sock_info.u.connect.path);
 	if (vdev == NULL) {
 		SPDK_ERRLOG("Couldn't find device with vid %d to create connection for.\n",
-			    g_dpdk_info.vid);
+			    g_vhost_sock_info.vid);
 		rc = -ENODEV;
 		goto out_unlock;
 	}
@@ -1456,7 +1220,7 @@ new_connection_cb(void *arg)
 	memset(vsession, 0, sizeof(*vsession) + vdev->backend->session_ctx_size);
 
 	vsession->vdev = vdev;
-	vsession->vid = g_dpdk_info.vid;
+	vsession->vid = g_vhost_sock_info.vid;
 	vsession->id = vdev->vsessions_num++;
 	vsession->name = spdk_sprintf_alloc("%ss%u", vdev->name, vsession->vid);
 	if (vsession->name == NULL) {
@@ -1479,36 +1243,16 @@ out_unlock:
 	unblock_dpdk_thread(rc);
 }
 
-static int
-new_connection(int vid)
-{
-	g_dpdk_info.vid = vid;
-	if (rte_vhost_get_ifname(vid, g_dpdk_info.u.connect.path, PATH_MAX) < 0) {
-		SPDK_ERRLOG("rte_vhost_get_ifname() failed for vid = %d\n", vid);
-		return -EFAULT;
-	}
-
-	spdk_thread_send_msg(g_vhost_init_thread,
-			     g_vhost_sock_ops.new_session, NULL);
-	block_dpdk_thread();
-
-	if (g_dpdk_info.response == 0) {
-		vhost_session_install_rte_compat_hooks(vid);
-	}
-
-	return g_dpdk_info.response;
-}
-
 static void
 destroy_connection_cb(void *arg)
 {
 	struct spdk_vhost_session *vsession;
 
 	pthread_mutex_lock(&g_vhost_mutex);
-	vsession = vhost_session_find_by_vid(g_dpdk_info.vid);
+	vsession = vhost_session_find_by_vid(g_vhost_sock_info.vid);
 	if (vsession == NULL) {
 		SPDK_ERRLOG("Couldn't find session with vid %d.\n",
-			    g_dpdk_info.vid);
+			    g_vhost_sock_info.vid);
 		pthread_mutex_unlock(&g_vhost_mutex);
 		unblock_dpdk_thread(-ENODEV);
 		return;
@@ -1522,42 +1266,13 @@ destroy_connection_cb(void *arg)
 }
 
 
-static void
-destroy_connection(int vid)
-{
-	/* we might have forcefully started the session without DPDK knowing
-	 * about it, so forcefully stop it now. It'll simply return if the
-	 * session is not started.
-	 */
-	stop_device(vid);
-
-	g_dpdk_info.vid = vid;
-	spdk_thread_send_msg(g_vhost_init_thread,
-			     g_vhost_sock_ops.delete_session, NULL);
-	block_dpdk_thread();
-}
-
 struct vhost_sock_ops g_vhost_sock_ops = {
 	.new_session = new_connection_cb,
 	.delete_session = destroy_connection_cb,
 	.start_session = start_device_cb,
 	.stop_session = stop_device_cb,
-	/* TODO: get/set_config */
-};
-
-const struct vhost_device_ops g_dpdk_vhost_ops = {
-	.new_device =  start_device,
-	.destroy_device = stop_device,
-	.new_connection = new_connection,
-	.destroy_connection = destroy_connection,
-#ifdef SPDK_CONFIG_VHOST_INTERNAL_LIB
-	.get_config = get_config,
-	.set_config = set_config,
-	.vhost_nvme_admin_passthrough = vhost_nvme_admin_passthrough,
-	.vhost_nvme_set_cq_call = vhost_nvme_set_cq_call,
-	.vhost_nvme_get_cap = vhost_nvme_get_cap,
-	.vhost_nvme_set_bar_mr = vhost_nvme_set_bar_mr,
-#endif
+	.get_config = get_config_cb,
+	.set_config = set_config_cb
 };
 
 void
@@ -1659,7 +1374,7 @@ spdk_vhost_init(spdk_vhost_init_cb init_cb)
 		goto err_out;
 	}
 
-	ret = sem_init(&g_dpdk_info.sem, 0, 0);
+	ret = sem_init(&g_vhost_sock_info.sem, 0, 0);
 	if (ret != 0) {
 		SPDK_ERRLOG("Failed to initialize semaphore for rte_vhost pthread.\n");
 		spdk_cpuset_free(g_tmp_cpuset);
@@ -1692,7 +1407,7 @@ _spdk_vhost_fini(void *arg1)
 	spdk_vhost_unlock();
 
 	/* All devices are removed now. */
-	sem_destroy(&g_dpdk_info.sem);
+	sem_destroy(&g_vhost_sock_info.sem);
 	spdk_cpuset_free(g_tmp_cpuset);
 	TAILQ_FOREACH_SAFE(pg, &g_poll_groups, tailq, tpg) {
 		TAILQ_REMOVE(&g_poll_groups, pg, tailq);
