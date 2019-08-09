@@ -445,21 +445,64 @@ static struct rte_vhost_user_extern_ops g_extern_vhost_ops = {
 	.post_msg_handle = spdk_extern_vhost_post_msg_handler,
 };
 
-void
-vhost_dev_install_rte_compat_hooks(const char *socket_path)
-{
-	uint64_t protocol_features = 0;
-
-	rte_vhost_driver_get_protocol_features(socket_path, &protocol_features);
-	protocol_features |= (1ULL << VHOST_USER_PROTOCOL_F_CONFIG);
-	rte_vhost_driver_set_protocol_features(socket_path, protocol_features);
-}
-
-#else /* SPDK_CONFIG_VHOST_INTERNAL_LIB */
-
-void
-vhost_dev_install_rte_compat_hooks(const char *socket_path)
-{
-	/* nothing to do. all the changes are already incorporated into rte_vhost */
-}
 #endif
+
+int
+vhost_register_unix_socket(const char *path, const char *ctrl_name,
+			   uint64_t virtio_features, uint64_t disabled_features)
+{
+	struct stat file_stat;
+#ifndef SPDK_CONFIG_VHOST_INTERNAL_LIB
+	uint64_t protocol_features = 0;
+#endif
+
+	/* Register vhost driver to handle vhost messages. */
+	if (stat(path, &file_stat) != -1) {
+		if (!S_ISSOCK(file_stat.st_mode)) {
+			SPDK_ERRLOG("Cannot create a domain socket at path \"%s\": "
+				    "The file already exists and is not a socket.\n",
+				    path);
+			return -EIO;
+		} else if (unlink(path) != 0) {
+			SPDK_ERRLOG("Cannot create a domain socket at path \"%s\": "
+				    "The socket already exists and failed to unlink.\n",
+				    path);
+			return -EIO;
+		}
+	}
+
+
+	if (rte_vhost_driver_register(path, 0) != 0) {
+		SPDK_ERRLOG("Could not register controller %s with vhost library\n", ctrl_name);
+		SPDK_ERRLOG("Check if domain socket %s already exists\n", path);
+		return -EIO;
+	}
+
+	if (rte_vhost_driver_set_features(path, virtio_features) ||
+	    rte_vhost_driver_disable_features(path, disabled_features)) {
+		SPDK_ERRLOG("Couldn't set vhost features for controller %s\n", ctrl_name);
+		rte_vhost_driver_unregister(path);
+		return -EIO;
+	}
+
+	if (rte_vhost_driver_callback_register(path, &g_dpdk_vhost_ops) != 0) {
+		rte_vhost_driver_unregister(path);
+		SPDK_ERRLOG("Couldn't register callbacks for controller %s\n", ctrl_name);
+		return -EIO;
+	}
+
+#ifndef SPDK_CONFIG_VHOST_INTERNAL_LIB
+	rte_vhost_driver_get_protocol_features(path, &protocol_features);
+	protocol_features |= (1ULL << VHOST_USER_PROTOCOL_F_CONFIG);
+	rte_vhost_driver_set_protocol_features(path, protocol_features);
+#endif
+
+	if (rte_vhost_driver_start(path) != 0) {
+		SPDK_ERRLOG("Failed to start vhost driver for controller %s (%d): %s\n",
+			    ctrl_name, errno, spdk_strerror(errno));
+		rte_vhost_driver_unregister(path);
+		return -EIO;
+	}
+
+	return 0;
+}
