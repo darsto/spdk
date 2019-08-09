@@ -443,21 +443,60 @@ static struct rte_vhost_user_extern_ops g_extern_vhost_ops = {
 	.post_msg_handle = spdk_extern_vhost_post_msg_handler,
 };
 
-void
-vhost_dev_install_rte_compat_hooks(const char *socket_path)
+#endif
+
+int
+vhost_dev_install_rte_compat_hooks(const char *path, uint64_t )
 {
 	uint64_t protocol_features = 0;
 
+	/* Register vhost driver to handle vhost messages. */
+	if (stat(path, &file_stat) != -1) {
+		if (!S_ISSOCK(file_stat.st_mode)) {
+			SPDK_ERRLOG("Cannot create a domain socket at path \"%s\": "
+				    "The file already exists and is not a socket.\n",
+				    path);
+			rc = -EIO;
+			goto out;
+		} else if (unlink(path) != 0) {
+			SPDK_ERRLOG("Cannot create a domain socket at path \"%s\": "
+				    "The socket already exists and failed to unlink.\n",
+				    path);
+			rc = -EIO;
+			goto out;
+		}
+	}
+
+
+	if (rte_vhost_driver_register(path, 0) != 0) {
+		SPDK_ERRLOG("Could not register controller %s with vhost library\n", name);
+		SPDK_ERRLOG("Check if domain socket %s already exists\n", path);
+		return -EIO;
+	}
+
+	if (rte_vhost_driver_set_features(path, backend->virtio_features) ||
+	    rte_vhost_driver_disable_features(path, backend->disabled_features)) {
+		SPDK_ERRLOG("Couldn't set vhost features for controller %s\n", name);
+		rte_vhost_driver_unregister(path);
+		return -EIO;
+	}
+
+	if (rte_vhost_driver_callback_register(path, &g_dpdk_vhost_ops) != 0) {
+		rte_vhost_driver_unregister(path);
+		SPDK_ERRLOG("Couldn't register callbacks for controller %s\n", name);
+		return -EIO;
+	}
+
+#ifndef SPDK_CONFIG_VHOST_INTERNAL_LIB
 	rte_vhost_driver_get_protocol_features(socket_path, &protocol_features);
 	protocol_features |= (1ULL << VHOST_USER_PROTOCOL_F_CONFIG);
 	rte_vhost_driver_set_protocol_features(socket_path, protocol_features);
-}
-
-#else /* SPDK_CONFIG_VHOST_INTERNAL_LIB */
-
-void
-vhost_dev_install_rte_compat_hooks(const char *socket_path)
-{
-	/* nothing to do. all the changes are already incorporated into rte_vhost */
-}
 #endif
+
+	if (rte_vhost_driver_start(path) != 0) {
+		rte_vhost_driver_unregister(path);
+		return -EIO;
+	}
+
+	return 0;
+}

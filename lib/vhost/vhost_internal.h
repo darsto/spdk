@@ -433,7 +433,7 @@ void vhost_session_stop_done(struct spdk_vhost_session *vsession, int response);
 void vhost_session_sock_cb_done(int response);
 
 struct spdk_vhost_session *vhost_session_find_by_vid(int vid);
-void vhost_dev_install_rte_compat_hooks(const char *socket_path);
+int vhost_register_unix_socket(const char *socket_path);
 
 struct vhost_poll_group *vhost_get_poll_group(struct spdk_cpuset *cpumask);
 void vhost_put_poll_group(struct vhost_poll_group *pg);
