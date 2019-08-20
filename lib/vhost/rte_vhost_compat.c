@@ -446,9 +446,11 @@ static struct rte_vhost_user_extern_ops g_extern_vhost_ops = {
 #endif
 
 int
-vhost_dev_install_rte_compat_hooks(const char *path, uint64_t )
+vhost_register_unix_socket(const char *path, const char *name,
+			   uint64_t virtio_features, uint64_t disabled_features)
 {
 	uint64_t protocol_features = 0;
+	struct stat file_stat;
 
 	/* Register vhost driver to handle vhost messages. */
 	if (stat(path, &file_stat) != -1) {
@@ -456,14 +458,12 @@ vhost_dev_install_rte_compat_hooks(const char *path, uint64_t )
 			SPDK_ERRLOG("Cannot create a domain socket at path \"%s\": "
 				    "The file already exists and is not a socket.\n",
 				    path);
-			rc = -EIO;
-			goto out;
+			return -EIO;
 		} else if (unlink(path) != 0) {
 			SPDK_ERRLOG("Cannot create a domain socket at path \"%s\": "
 				    "The socket already exists and failed to unlink.\n",
 				    path);
-			rc = -EIO;
-			goto out;
+			return -EIO;
 		}
 	}
 
@@ -474,8 +474,8 @@ vhost_dev_install_rte_compat_hooks(const char *path, uint64_t )
 		return -EIO;
 	}
 
-	if (rte_vhost_driver_set_features(path, backend->virtio_features) ||
-	    rte_vhost_driver_disable_features(path, backend->disabled_features)) {
+	if (rte_vhost_driver_set_features(path, virtio_features) ||
+	    rte_vhost_driver_disable_features(path, disabled_features)) {
 		SPDK_ERRLOG("Couldn't set vhost features for controller %s\n", name);
 		rte_vhost_driver_unregister(path);
 		return -EIO;
@@ -488,12 +488,14 @@ vhost_dev_install_rte_compat_hooks(const char *path, uint64_t )
 	}
 
 #ifndef SPDK_CONFIG_VHOST_INTERNAL_LIB
-	rte_vhost_driver_get_protocol_features(socket_path, &protocol_features);
+	rte_vhost_driver_get_protocol_features(path, &protocol_features);
 	protocol_features |= (1ULL << VHOST_USER_PROTOCOL_F_CONFIG);
-	rte_vhost_driver_set_protocol_features(socket_path, protocol_features);
+	rte_vhost_driver_set_protocol_features(path, protocol_features);
 #endif
 
 	if (rte_vhost_driver_start(path) != 0) {
+		SPDK_ERRLOG("Failed to start vhost driver for controller %s (%d): %s\n",
+			    name, errno, spdk_strerror(errno));
 		rte_vhost_driver_unregister(path);
 		return -EIO;
 	}

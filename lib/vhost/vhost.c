@@ -588,7 +588,6 @@ vhost_dev_register(struct spdk_vhost_dev *vdev, const char *name, const char *ma
 		   const struct spdk_vhost_dev_backend *backend)
 {
 	char path[PATH_MAX];
-	struct stat file_stat;
 	struct spdk_cpuset *cpumask;
 	int rc;
 
@@ -642,9 +641,7 @@ vhost_dev_register(struct spdk_vhost_dev *vdev, const char *name, const char *ma
 	vhost_dev_set_coalescing(vdev, SPDK_VHOST_COALESCING_DELAY_BASE_US,
 				 SPDK_VHOST_VQ_IOPS_COALESCING_THRESHOLD);
 
-	if(vhost_register_unix_socket(path)) {
-		SPDK_ERRLOG("Failed to start vhost driver for controller %s (%d): %s\n",
-			    name, errno, spdk_strerror(errno));
+	if (vhost_register_unix_socket(path, name, backend->virtio_features, backend->disabled_features)) {
 		TAILQ_REMOVE(&g_vhost_devices, vdev, tailq);
 		free(vdev->name);
 		free(vdev->path);
