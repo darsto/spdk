@@ -915,6 +915,28 @@ _get_current_poll_group(void)
 	return NULL;
 }
 
+static void
+unblock_dpdk_thread(int rc)
+{
+	g_dpdk_info.response = rc;
+	sem_post(&g_dpdk_info.sem);
+}
+
+static void
+block_dpdk_thread(void)
+{
+	struct timespec timeout;
+	int rc;
+
+	clock_gettime(CLOCK_REALTIME, &timeout);
+	timeout.tv_sec += 3;
+	rc = sem_timedwait(&g_dpdk_info.sem, &timeout);
+	if (rc != 0) {
+		SPDK_ERRLOG("timeout\n");
+		sem_wait(&g_dpdk_info.sem);
+	}
+}
+
 void
 vhost_session_start_done(struct spdk_vhost_session *vsession, int response)
 {
@@ -929,8 +951,7 @@ vhost_session_start_done(struct spdk_vhost_session *vsession, int response)
 		vsession->vdev->active_session_num++;
 	}
 
-	g_dpdk_info.response = response;
-	sem_post(&g_dpdk_info.sem);
+	unblock_dpdk_thread(response);
 }
 
 void
@@ -947,8 +968,7 @@ vhost_session_stop_done(struct spdk_vhost_session *vsession, int response)
 		vsession->vdev->active_session_num--;
 	}
 
-	g_dpdk_info.response = response;
-	sem_post(&g_dpdk_info.sem);
+	unblock_dpdk_thread(response);
 }
 
 static void foreach_session_continue(struct vhost_session_fn_ctx *ev_ctx,
@@ -1082,20 +1102,12 @@ _stop_session(struct spdk_vhost_session *vsession)
 {
 	struct spdk_vhost_dev *vdev = vsession->vdev;
 	struct spdk_vhost_virtqueue *q;
-	struct timespec timeout;
-	int rc;
 	uint16_t i;
 
 	vdev->backend->stop_session(vsession);
 	pthread_mutex_unlock(&g_vhost_mutex);
 
-	clock_gettime(CLOCK_REALTIME, &timeout);
-	timeout.tv_sec += 3;
-	rc = sem_timedwait(&g_dpdk_info.sem, &timeout);
-	if (rc != 0) {
-		SPDK_ERRLOG("%s: session start timed out\n", vsession->name);
-		sem_wait(&g_dpdk_info.sem);
-	}
+	block_dpdk_thread();
 
 	if (g_dpdk_info.response != 0) {
 		SPDK_ERRLOG("Couldn't stop device with vid %d.\n", vsession->vid);
@@ -1143,7 +1155,6 @@ start_device(int vid)
 {
 	struct spdk_vhost_dev *vdev;
 	struct spdk_vhost_session *vsession;
-	struct timespec timeout;
 	int rc = -1;
 	uint16_t i;
 
@@ -1224,13 +1235,7 @@ start_device(int vid)
 	vdev->backend->start_session(vsession);
 	pthread_mutex_unlock(&g_vhost_mutex);
 
-	clock_gettime(CLOCK_REALTIME, &timeout);
-	timeout.tv_sec += 3;
-	rc = sem_timedwait(&g_dpdk_info.sem, &timeout);
-	if (rc != 0) {
-		SPDK_ERRLOG("%s: session stop timed out\n", vsession->name);
-		sem_wait(&g_dpdk_info.sem);
-	}
+	block_dpdk_thread();
 
 	if (g_dpdk_info.response != 0) {
 		pthread_mutex_lock(&g_vhost_mutex);
