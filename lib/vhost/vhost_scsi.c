@@ -1076,10 +1076,8 @@ vhost_scsi_session_remove_tgt(struct spdk_vhost_dev *vdev,
 {
 	struct scsi_tgt_hotplug_ctx *ctx = _ctx;
 	unsigned scsi_tgt_num = ctx->scsi_tgt_num;
-	struct spdk_vhost_scsi_session *svsession =
-		(struct spdk_vhost_scsi_session *)vsession;
-	struct spdk_scsi_dev_session_state *state =
-		&svsession->scsi_dev_state[scsi_tgt_num];
+	struct spdk_vhost_scsi_session *svsession = (struct spdk_vhost_scsi_session *)vsession;
+	struct spdk_scsi_dev_session_state *state = &svsession->scsi_dev_state[scsi_tgt_num];
 
 	if (!vsession->started || state->dev == NULL) {
 		/* Nothing to do */
