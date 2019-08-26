@@ -1122,8 +1122,7 @@ spdk_vhost_nvme_start(struct spdk_vhost_session *vsession)
 	}
 
 	pg = vhost_get_poll_group(vsession->vdev->cpumask);
-	return vhost_session_send_event(pg, vsession, spdk_vhost_nvme_start_cb,
-					3, "start session");
+	return vhost_session_send_event(pg, vsession, spdk_vhost_nvme_start_cb);
 }
 
 static void
@@ -1209,7 +1208,7 @@ static int
 spdk_vhost_nvme_stop(struct spdk_vhost_session *vsession)
 {
 	return vhost_session_send_event(vsession->poll_group, vsession,
-					spdk_vhost_nvme_stop_cb, 3, "start session");
+					spdk_vhost_nvme_stop_cb);
 }
 
 static void
