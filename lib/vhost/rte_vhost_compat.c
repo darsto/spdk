@@ -134,7 +134,9 @@ unregister_vhost_mem(struct rte_vhost_memory *mem)
 
 }
 
+#ifndef SPDK_CONFIG_VHOST_INTERNAL_LIB
 static struct rte_vhost_user_extern_ops g_extern_vhost_ops;
+#endif
 
 static int
 new_connection(int vid)
