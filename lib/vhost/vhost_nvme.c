@@ -1075,20 +1075,24 @@ alloc_task_pool(struct spdk_vhost_nvme_dev *nvme)
 	return 0;
 }
 
-static int
-spdk_vhost_nvme_start_cb(struct spdk_vhost_dev *vdev,
-			 struct spdk_vhost_session *vsession, void *unused)
+static void
+spdk_vhost_nvme_start_cb(void *arg)
 {
+	struct spdk_vhost_session *vsession = arg;
+	struct spdk_vhost_dev *vdev = vsession->vdev;
 	struct spdk_vhost_nvme_dev *nvme = to_nvme_dev(vdev);
 	struct spdk_vhost_nvme_ns *ns_dev;
 	uint32_t i;
+	int rc;
 
 	if (nvme == NULL) {
-		return -1;
+		rc = -EFAULT;
+		goto out;
 	}
 
-	if (alloc_task_pool(nvme)) {
-		return -1;
+	rc = alloc_task_pool(nvme);
+	if (rc) {
+		goto out;
 	}
 
 	SPDK_NOTICELOG("Start Device %u, Path %s, lcore %d\n", vsession->vid,
@@ -1098,7 +1102,8 @@ spdk_vhost_nvme_start_cb(struct spdk_vhost_dev *vdev,
 		ns_dev = &nvme->ns[i];
 		ns_dev->bdev_io_channel = spdk_bdev_get_io_channel(ns_dev->bdev_desc);
 		if (!ns_dev->bdev_io_channel) {
-			return -1;
+			rc = -EFAULT;
+			goto out;
 		}
 	}
 
@@ -1106,8 +1111,8 @@ spdk_vhost_nvme_start_cb(struct spdk_vhost_dev *vdev,
 	/* Start the NVMe Poller */
 	nvme->requestq_poller = spdk_poller_register(nvme_worker, nvme, 0);
 
-	vhost_session_start_done(vsession, 0);
-	return 0;
+out:
+	vhost_session_start_done(vsession, rc);
 }
 
 static int
@@ -1122,7 +1127,8 @@ spdk_vhost_nvme_start(struct spdk_vhost_session *vsession)
 	}
 
 	pg = vhost_get_poll_group(vsession->vdev->cpumask);
-	return vhost_session_send_event(pg, vsession, spdk_vhost_nvme_start_cb);
+	spdk_thread_send_msg(pg->thread, spdk_vhost_nvme_start_cb, vsession);
+	return 0;
 }
 
 static void
@@ -1184,15 +1190,16 @@ destroy_device_poller_cb(void *arg)
 	return -1;
 }
 
-static int
-spdk_vhost_nvme_stop_cb(struct spdk_vhost_dev *vdev,
-			struct spdk_vhost_session *vsession, void *unused)
+static void
+spdk_vhost_nvme_stop_cb(void *arg)
 {
+	struct spdk_vhost_session *vsession = arg;
+	struct spdk_vhost_dev *vdev = vsession->vdev;
 	struct spdk_vhost_nvme_dev *nvme = to_nvme_dev(vdev);
 
 	if (nvme == NULL) {
 		vhost_session_stop_done(vsession, -1);
-		return -1;
+		return;
 	}
 
 	free_task_pool(nvme);
@@ -1200,15 +1207,14 @@ spdk_vhost_nvme_stop_cb(struct spdk_vhost_dev *vdev,
 
 	spdk_poller_unregister(&nvme->requestq_poller);
 	nvme->stop_poller = spdk_poller_register(destroy_device_poller_cb, nvme, 1000);
-
-	return 0;
 }
 
 static int
 spdk_vhost_nvme_stop(struct spdk_vhost_session *vsession)
 {
-	return vhost_session_send_event(vsession->poll_group, vsession,
-					spdk_vhost_nvme_stop_cb);
+	spdk_thread_send_msg(vsession->poll_group->thread,
+			     spdk_vhost_nvme_stop_cb, vsession);
+	return 0;
 }
 
 static void
