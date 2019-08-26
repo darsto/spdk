@@ -1290,8 +1290,8 @@ get_config(int vid, uint8_t *config, uint32_t len)
 	}
 
 	vdev = vsession->vdev;
-	if (vdev->backend->vhost_get_config) {
-		rc = vdev->backend->vhost_get_config(vdev, config, len);
+	if (vdev->backend->get_config) {
+		rc = vdev->backend->get_config(vsession, config, len);
 	}
 
 out:
@@ -1314,8 +1314,8 @@ set_config(int vid, uint8_t *config, uint32_t offset, uint32_t size, uint32_t fl
 	}
 
 	vdev = vsession->vdev;
-	if (vdev->backend->vhost_set_config) {
-		rc = vdev->backend->vhost_set_config(vdev, config, offset, size, flags);
+	if (vdev->backend->set_config) {
+		rc = vdev->backend->set_config(vsession, config, offset, size, flags);
 	}
 
 out:
