@@ -46,10 +46,9 @@ DEFINE_STUB(rte_vhost_set_vring_base, int, (int vid, uint16_t queue_id,
 		uint16_t last_avail_idx, uint16_t last_used_idx), 0);
 DEFINE_STUB(rte_vhost_get_vring_base, int, (int vid, uint16_t queue_id,
 		uint16_t *last_avail_idx, uint16_t *last_used_idx), 0);
-DEFINE_STUB_V(spdk_vhost_session_install_rte_compat_hooks,
-	      (struct spdk_vhost_session *vsession));
-DEFINE_STUB_V(spdk_vhost_dev_install_rte_compat_hooks,
-	      (struct spdk_vhost_dev *vdev));
+DEFINE_STUB_V(vhost_session_install_rte_compat_hooks, (int vid));
+DEFINE_STUB(vhost_register_unix_socket, int, (const char *path, const char *name,
+		uint64_t virtio_features, uint64_t disabled_features), 0);
 DEFINE_STUB(rte_vhost_driver_unregister, int, (const char *path), 0);
 DEFINE_STUB(spdk_event_allocate, struct spdk_event *,
 	    (uint32_t lcore, spdk_event_fn fn, void *arg1, void *arg2), NULL);
@@ -98,10 +97,13 @@ DEFINE_STUB(rte_vhost_driver_callback_register, int,
 DEFINE_STUB(rte_vhost_driver_disable_features, int, (const char *path, uint64_t features), 0);
 DEFINE_STUB(rte_vhost_driver_set_features, int, (const char *path, uint64_t features), 0);
 DEFINE_STUB(rte_vhost_driver_register, int, (const char *path, uint64_t flags), 0);
-DEFINE_STUB(spdk_vhost_nvme_admin_passthrough, int, (int vid, void *cmd, void *cqe, void *buf), 0);
-DEFINE_STUB(spdk_vhost_nvme_set_cq_call, int, (int vid, uint16_t qid, int fd), 0);
-DEFINE_STUB(spdk_vhost_nvme_set_bar_mr, int, (int vid, void *bar, uint64_t bar_size), 0);
-DEFINE_STUB(spdk_vhost_nvme_get_cap, int, (int vid, uint64_t *cap), 0);
+DEFINE_STUB(vhost_nvme_admin_passthrough, int, (int vid, void *cmd, void *cqe, void *buf), 0);
+DEFINE_STUB(vhost_nvme_set_cq_call, int, (int vid, uint16_t qid, int fd), 0);
+DEFINE_STUB(vhost_nvme_set_bar_mr, int, (int vid, void *bar, uint64_t bar_size), 0);
+DEFINE_STUB(vhost_nvme_get_cap, int, (int vid, uint64_t *cap), 0);
+DEFINE_STUB_V(unblock_dpdk_thread, (int rc));
+
+const struct vhost_device_ops g_dpdk_vhost_ops;
 
 void *
 spdk_call_unaffinitized(void *cb(void *arg), void *arg)
@@ -128,7 +130,7 @@ alloc_vdev(struct spdk_vhost_dev **vdev_p, const char *name, const char *cpumask
 	CU_ASSERT(rc == 0);
 	SPDK_CU_ASSERT_FATAL(vdev != NULL);
 	memset(vdev, 0, sizeof(*vdev));
-	rc = spdk_vhost_dev_register(vdev, name, cpumask, &g_vdev_backend);
+	rc = vhost_dev_register(vdev, name, cpumask, &g_vdev_backend);
 	if (rc == 0) {
 		*vdev_p = vdev;
 	} else {
@@ -183,7 +185,7 @@ cleanup_vdev(struct spdk_vhost_dev *vdev)
 	if (!TAILQ_EMPTY(&vdev->vsessions)) {
 		stop_vdev(vdev);
 	}
-	spdk_vhost_dev_unregister(vdev);
+	vhost_dev_unregister(vdev);
 	free(vdev);
 }
 
@@ -207,7 +209,7 @@ desc_to_iov_test(void)
 	desc.addr = 0x110000;
 	desc.len = 0x1000;
 	iov_index = 0;
-	rc = spdk_vhost_vring_desc_to_iov(vsession, iov, &iov_index, &desc);
+	rc = vhost_vring_desc_to_iov(vsession, iov, &iov_index, &desc);
 	CU_ASSERT(rc == 0);
 	CU_ASSERT(iov_index == 1);
 	CU_ASSERT(iov[0].iov_base == (void *)0x1110000);
@@ -220,7 +222,7 @@ desc_to_iov_test(void)
 
 	/* Same test, but ensure it respects the non-zero starting iov_index. */
 	iov_index = SPDK_VHOST_IOVS_MAX - 1;
-	rc = spdk_vhost_vring_desc_to_iov(vsession, iov, &iov_index, &desc);
+	rc = vhost_vring_desc_to_iov(vsession, iov, &iov_index, &desc);
 	CU_ASSERT(rc == 0);
 	CU_ASSERT(iov_index == SPDK_VHOST_IOVS_MAX);
 	CU_ASSERT(iov[SPDK_VHOST_IOVS_MAX - 1].iov_base == (void *)0x1110000);
@@ -229,7 +231,7 @@ desc_to_iov_test(void)
 
 	/* Test for failure if iov_index already equals SPDK_VHOST_IOVS_MAX. */
 	iov_index = SPDK_VHOST_IOVS_MAX;
-	rc = spdk_vhost_vring_desc_to_iov(vsession, iov, &iov_index, &desc);
+	rc = vhost_vring_desc_to_iov(vsession, iov, &iov_index, &desc);
 	CU_ASSERT(rc != 0);
 	memset(iov, 0, sizeof(iov));
 
@@ -237,7 +239,7 @@ desc_to_iov_test(void)
 	desc.addr = 0x1F0000;
 	desc.len = 0x20000;
 	iov_index = 0;
-	rc = spdk_vhost_vring_desc_to_iov(vsession, iov, &iov_index, &desc);
+	rc = vhost_vring_desc_to_iov(vsession, iov, &iov_index, &desc);
 	CU_ASSERT(rc == 0);
 	CU_ASSERT(iov_index == 1);
 	CU_ASSERT(iov[0].iov_base == (void *)0x11F0000);
@@ -246,7 +248,7 @@ desc_to_iov_test(void)
 
 	/* Same test, but ensure it respects the non-zero starting iov_index. */
 	iov_index = SPDK_VHOST_IOVS_MAX - 1;
-	rc = spdk_vhost_vring_desc_to_iov(vsession, iov, &iov_index, &desc);
+	rc = vhost_vring_desc_to_iov(vsession, iov, &iov_index, &desc);
 	CU_ASSERT(rc == 0);
 	CU_ASSERT(iov_index == SPDK_VHOST_IOVS_MAX);
 	CU_ASSERT(iov[SPDK_VHOST_IOVS_MAX - 1].iov_base == (void *)0x11F0000);
@@ -257,7 +259,7 @@ desc_to_iov_test(void)
 	desc.addr = 0x3F0000;
 	desc.len = 0x20000;
 	iov_index = 0;
-	rc = spdk_vhost_vring_desc_to_iov(vsession, iov, &iov_index, &desc);
+	rc = vhost_vring_desc_to_iov(vsession, iov, &iov_index, &desc);
 	CU_ASSERT(rc == 0);
 	CU_ASSERT(iov_index == 2);
 	CU_ASSERT(iov[0].iov_base == (void *)0x13F0000);
@@ -318,11 +320,11 @@ session_find_by_vid_test(void)
 
 	vsession = TAILQ_FIRST(&vdev->vsessions);
 
-	tmp = spdk_vhost_session_find_by_vid(vsession->vid);
+	tmp = vhost_session_find_by_vid(vsession->vid);
 	CU_ASSERT(tmp == vsession);
 
 	/* Search for a device with incorrect vid */
-	tmp = spdk_vhost_session_find_by_vid(vsession->vid + 0xFF);
+	tmp = vhost_session_find_by_vid(vsession->vid + 0xFF);
 	CU_ASSERT(tmp == NULL);
 
 	cleanup_vdev(vdev);
@@ -340,7 +342,7 @@ remove_controller_test(void)
 	/* Remove device when controller is in use */
 	start_vdev(vdev);
 	SPDK_CU_ASSERT_FATAL(!TAILQ_EMPTY(&vdev->vsessions));
-	ret = spdk_vhost_dev_unregister(vdev);
+	ret = vhost_dev_unregister(vdev);
 	CU_ASSERT(ret != 0);
 
 	cleanup_vdev(vdev);
@@ -365,7 +367,7 @@ vq_avail_ring_get_test(void)
 		vq.vring.avail->ring[i] = i;
 	}
 
-	ret = spdk_vhost_vq_avail_ring_get(&vq, reqs, reqs_len);
+	ret = vhost_vq_avail_ring_get(&vq, reqs, reqs_len);
 	CU_ASSERT(ret == 5);
 	CU_ASSERT(vq.last_avail_idx == 29);
 	for (i = 0; i < ret; i++) {
@@ -377,7 +379,7 @@ vq_avail_ring_get_test(void)
 	vq.vring.avail->idx = 29;
 	reqs_len = 6;
 
-	ret = spdk_vhost_vq_avail_ring_get(&vq, reqs, reqs_len);
+	ret = vhost_vq_avail_ring_get(&vq, reqs, reqs_len);
 	CU_ASSERT(ret == reqs_len);
 	CU_ASSERT(vq.last_avail_idx == 26);
 	for (i = 0; i < ret; i++) {
@@ -389,14 +391,14 @@ vq_avail_ring_get_test(void)
 	vq.vring.avail->idx = 156;
 	reqs_len = 6;
 
-	ret = spdk_vhost_vq_avail_ring_get(&vq, reqs, reqs_len);
+	ret = vhost_vq_avail_ring_get(&vq, reqs, reqs_len);
 	CU_ASSERT(ret == 0);
 
 	/* Test overflow in the avail->idx variable. */
 	vq.last_avail_idx = 65535;
 	vq.vring.avail->idx = 4;
 	reqs_len = 6;
-	ret = spdk_vhost_vq_avail_ring_get(&vq, reqs, reqs_len);
+	ret = vhost_vq_avail_ring_get(&vq, reqs, reqs_len);
 	CU_ASSERT(ret == 5);
 	CU_ASSERT(vq.last_avail_idx == 4);
 	CU_ASSERT(reqs[0] == vq.vring.avail->ring[31]);

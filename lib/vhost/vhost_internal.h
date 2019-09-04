@@ -94,7 +94,11 @@
 #define SPDK_VHOST_DISABLED_FEATURES ((1ULL << VIRTIO_RING_F_EVENT_IDX) | \
 	(1ULL << VIRTIO_F_NOTIFY_ON_EMPTY))
 
-struct vhost_poll_group;
+struct vhost_poll_group {
+	struct spdk_thread *thread;
+	unsigned ref;
+	TAILQ_ENTRY(vhost_poll_group) tailq;
+};
 
 struct spdk_vhost_virtqueue {
 	struct rte_vhost_vring vring;
@@ -191,14 +195,8 @@ struct spdk_vhost_dev {
 };
 
 /**
- * Synchronized vhost session event used for backend callbacks.
- *
- * \param vdev vhost device. If the device has been deleted
- * in the meantime, this function will be called one last
- * time with vdev == NULL.
- * \param vsession vhost session. If all sessions have been
- * iterated through, this function will be called one last
- * time with vsession == NULL.
+ * \param vdev vhost device.
+ * \param vsession vhost session.
  * \param arg user-provided parameter.
  *
  * \return negative values will break the foreach call, meaning
@@ -208,6 +206,12 @@ struct spdk_vhost_dev {
 typedef int (*spdk_vhost_session_fn)(struct spdk_vhost_dev *vdev,
 				     struct spdk_vhost_session *vsession,
 				     void *arg);
+
+/**
+ * \param vdev vhost device.
+ * \param arg user-provided parameter.
+ */
+typedef void (*spdk_vhost_dev_fn)(struct spdk_vhost_dev *vdev, void *arg);
 
 struct spdk_vhost_dev_backend {
 	uint64_t virtio_features;
@@ -222,19 +226,22 @@ struct spdk_vhost_dev_backend {
 	int (*start_session)(struct spdk_vhost_session *vsession);
 	int (*stop_session)(struct spdk_vhost_session *vsession);
 
-	int (*vhost_get_config)(struct spdk_vhost_dev *vdev, uint8_t *config, uint32_t len);
-	int (*vhost_set_config)(struct spdk_vhost_dev *vdev, uint8_t *config,
-				uint32_t offset, uint32_t size, uint32_t flags);
+	int (*get_config)(struct spdk_vhost_session *vsession,
+			  uint8_t *config, uint32_t len);
+	int (*set_config)(struct spdk_vhost_session *vsession, uint8_t *config,
+			  uint32_t offset, uint32_t size, uint32_t flags);
 
 	void (*dump_info_json)(struct spdk_vhost_dev *vdev, struct spdk_json_write_ctx *w);
 	void (*write_config_json)(struct spdk_vhost_dev *vdev, struct spdk_json_write_ctx *w);
 	int (*remove_device)(struct spdk_vhost_dev *vdev);
 };
 
-void *spdk_vhost_gpa_to_vva(struct spdk_vhost_session *vsession, uint64_t addr, uint64_t len);
+extern struct spdk_thread *g_vhost_init_thread;
 
-uint16_t spdk_vhost_vq_avail_ring_get(struct spdk_vhost_virtqueue *vq, uint16_t *reqs,
-				      uint16_t reqs_len);
+void *vhost_gpa_to_vva(struct spdk_vhost_session *vsession, uint64_t addr, uint64_t len);
+
+uint16_t vhost_vq_avail_ring_get(struct spdk_vhost_virtqueue *vq, uint16_t *reqs,
+				 uint16_t reqs_len);
 
 /**
  * Get a virtio descriptor at given index in given virtqueue.
@@ -253,9 +260,9 @@ uint16_t spdk_vhost_vq_avail_ring_get(struct spdk_vhost_virtqueue *vq, uint16_t 
  * \return 0 on success, -1 if given index is invalid.
  * If -1 is returned, the content of params is undefined.
  */
-int spdk_vhost_vq_get_desc(struct spdk_vhost_session *vsession, struct spdk_vhost_virtqueue *vq,
-			   uint16_t req_idx, struct vring_desc **desc, struct vring_desc **desc_table,
-			   uint32_t *desc_table_size);
+int vhost_vq_get_desc(struct spdk_vhost_session *vsession, struct spdk_vhost_virtqueue *vq,
+		      uint16_t req_idx, struct vring_desc **desc, struct vring_desc **desc_table,
+		      uint32_t *desc_table_size);
 
 /**
  * Send IRQ/call client (if pending) for \c vq.
@@ -265,7 +272,7 @@ int spdk_vhost_vq_get_desc(struct spdk_vhost_session *vsession, struct spdk_vhos
  *   0 - if no interrupt was signalled
  *   1 - if interrupt was signalled
  */
-int spdk_vhost_vq_used_signal(struct spdk_vhost_session *vsession, struct spdk_vhost_virtqueue *vq);
+int vhost_vq_used_signal(struct spdk_vhost_session *vsession, struct spdk_vhost_virtqueue *vq);
 
 
 /**
@@ -273,11 +280,11 @@ int spdk_vhost_vq_used_signal(struct spdk_vhost_session *vsession, struct spdk_v
  * \param vsession vhost session
  * \param vq virtqueue
  */
-void spdk_vhost_session_used_signal(struct spdk_vhost_session *vsession);
+void vhost_session_used_signal(struct spdk_vhost_session *vsession);
 
-void spdk_vhost_vq_used_ring_enqueue(struct spdk_vhost_session *vsession,
-				     struct spdk_vhost_virtqueue *vq,
-				     uint16_t id, uint32_t len);
+void vhost_vq_used_ring_enqueue(struct spdk_vhost_session *vsession,
+				struct spdk_vhost_virtqueue *vq,
+				uint16_t id, uint32_t len);
 
 /**
  * Get subsequent descriptor from given table.
@@ -290,26 +297,26 @@ void spdk_vhost_vq_used_ring_enqueue(struct spdk_vhost_session *vsession,
  * The *desc* param will be set regardless of the
  * return value.
  */
-int spdk_vhost_vring_desc_get_next(struct vring_desc **desc,
-				   struct vring_desc *desc_table, uint32_t desc_table_size);
-bool spdk_vhost_vring_desc_is_wr(struct vring_desc *cur_desc);
+int vhost_vring_desc_get_next(struct vring_desc **desc,
+			      struct vring_desc *desc_table, uint32_t desc_table_size);
+bool vhost_vring_desc_is_wr(struct vring_desc *cur_desc);
 
-int spdk_vhost_vring_desc_to_iov(struct spdk_vhost_session *vsession, struct iovec *iov,
-				 uint16_t *iov_index, const struct vring_desc *desc);
+int vhost_vring_desc_to_iov(struct spdk_vhost_session *vsession, struct iovec *iov,
+			    uint16_t *iov_index, const struct vring_desc *desc);
 
 static inline bool __attribute__((always_inline))
-spdk_vhost_dev_has_feature(struct spdk_vhost_session *vsession, unsigned feature_id)
+vhost_dev_has_feature(struct spdk_vhost_session *vsession, unsigned feature_id)
 {
 	return vsession->negotiated_features & (1ULL << feature_id);
 }
 
-int spdk_vhost_dev_register(struct spdk_vhost_dev *vdev, const char *name, const char *mask_str,
-			    const struct spdk_vhost_dev_backend *backend);
-int spdk_vhost_dev_unregister(struct spdk_vhost_dev *vdev);
+int vhost_dev_register(struct spdk_vhost_dev *vdev, const char *name, const char *mask_str,
+		       const struct spdk_vhost_dev_backend *backend);
+int vhost_dev_unregister(struct spdk_vhost_dev *vdev);
 
-int spdk_vhost_scsi_controller_construct(void);
-int spdk_vhost_blk_controller_construct(void);
-void spdk_vhost_dump_info_json(struct spdk_vhost_dev *vdev, struct spdk_json_write_ctx *w);
+int vhost_scsi_controller_construct(void);
+int vhost_blk_controller_construct(void);
+void vhost_dump_info_json(struct spdk_vhost_dev *vdev, struct spdk_json_write_ctx *w);
 
 /*
  * Call function for each active session on the provided
@@ -320,31 +327,73 @@ void spdk_vhost_dump_info_json(struct spdk_vhost_dev *vdev, struct spdk_json_wri
  * \param fn function to call
  * \param arg additional argument to \c fn
  */
-void spdk_vhost_dev_foreach_session(struct spdk_vhost_dev *dev,
-				    spdk_vhost_session_fn fn, void *arg);
+void vhost_dev_foreach_session(struct spdk_vhost_dev *dev,
+			       spdk_vhost_session_fn fn,
+			       spdk_vhost_dev_fn cpl_fn,
+			       void *arg);
 
 /**
- * Call a function on the provided lcore and block until either
- * spdk_vhost_session_start_done() or spdk_vhost_session_stop_done()
- * is called.
- *
- * This must be called under the global vhost mutex, which this function
- * will unlock for the time it's waiting. It's meant to be called only
- * from start/stop session callbacks.
- *
- * \param pg designated session's poll group
- * \param vsession vhost session
- * \param cb_fn the function to call. The void *arg parameter in cb_fn
- * is always NULL.
- * \param timeout_sec timeout in seconds. This function will still
- * block after the timeout expires, but will print the provided errmsg.
- * \param errmsg error message to print once the timeout expires
- * \return return the code passed to spdk_vhost_session_event_done().
+ * Callbacks to be called on incoming vhost socket events.
+ * All events need to be consumed with unblock_dpdk_thread(),
+ * with the exception of start_session/stop_session which need to be
+ * consumed with vhost_session_start_done()/vhost_session_stop_done().
  */
-int spdk_vhost_session_send_event(struct vhost_poll_group *pg,
-				  struct spdk_vhost_session *vsession,
-				  spdk_vhost_session_fn cb_fn, unsigned timeout_sec,
-				  const char *errmsg);
+struct vhost_sock_ops {
+	/** New session is created */
+	void (*new_session)(void *unused);
+	/** A session is being destroyed */
+	void (*delete_session)(void *unused);
+	/** A session is ready to be polled */
+	void (*start_session)(void *unused);
+	/** A session is no longer capable of being processed */
+	void (*stop_session)(void *unused);
+	/** Session's Virtio-PCI config is requested */
+	void (*get_config)(void *unused);
+	/** Session's Virtio-PCI config is overwritten */
+	void (*set_config)(void *unused);
+};
+
+struct vhost_sock_queue_info {
+	struct rte_vhost_vring vring;
+	uint16_t last_avail_idx;
+	uint16_t last_used_idx;
+};
+
+/** Data exchanged between socket pthread and SPDK threads */
+struct vhost_sock_info {
+	/** ID of the currently modified session */
+	int vid;
+
+	union {
+		struct {
+			char path[PATH_MAX];
+		} connect;
+		struct {
+			uint64_t negotiated_features;
+			struct rte_vhost_memory *mem;
+			struct vhost_sock_queue_info queue[SPDK_VHOST_MAX_VQUEUES];
+		} start, stop;
+		struct {
+			uint8_t *buf;
+			uint32_t offset;
+			uint32_t size;
+			uint32_t flags;
+		} config;
+	} u;
+
+	/**
+	 * DPDK calls our callbacks synchronously but the work those
+	 * callbacks perform needs to be async. We'll just wait on the
+	 * socket pthread until our async work is done.
+	 */
+	sem_t sem;
+
+	/** Return code for the current callback */
+	int response;
+};
+
+extern struct vhost_sock_info g_vhost_sock_info;
+extern struct vhost_sock_ops g_vhost_sock_ops;
 
 /**
  * Finish a blocking spdk_vhost_session_send_event() call and finally
@@ -357,7 +406,7 @@ int spdk_vhost_session_send_event(struct vhost_poll_group *pg,
  * \param vsession vhost session
  * \param response return code
  */
-void spdk_vhost_session_start_done(struct spdk_vhost_session *vsession, int response);
+void vhost_session_start_done(struct spdk_vhost_session *vsession, int response);
 
 /**
  * Finish a blocking spdk_vhost_session_send_event() call and finally
@@ -368,32 +417,42 @@ void spdk_vhost_session_start_done(struct spdk_vhost_session *vsession, int resp
  *
  * Must be called under the global vhost lock.
  *
- * Must be called under the global vhost mutex.
+ * \param vsession vhost session
+ * \param response return code
+ */
+void vhost_session_stop_done(struct spdk_vhost_session *vsession, int response);
+
+/**
+ * Finish an asynchronous vhost socket operation.
+ *
+ * Must be called under the global vhost lock.
  *
  * \param vsession vhost session
  * \param response return code
  */
-void spdk_vhost_session_stop_done(struct spdk_vhost_session *vsession, int response);
+void unblock_dpdk_thread(int response);
 
-struct spdk_vhost_session *spdk_vhost_session_find_by_vid(int vid);
-void spdk_vhost_session_install_rte_compat_hooks(struct spdk_vhost_session *vsession);
-void spdk_vhost_dev_install_rte_compat_hooks(struct spdk_vhost_dev *vdev);
+struct spdk_vhost_session *vhost_session_find_by_vid(int vid);
 
-struct vhost_poll_group *spdk_vhost_get_poll_group(struct spdk_cpuset *cpumask);
-void spdk_vhost_put_poll_group(struct vhost_poll_group *pg);
+int vhost_register_unix_socket(const char *path, const char *ctrl_name,
+			       uint64_t virtio_features, uint64_t disabled_features);
 
-int spdk_remove_vhost_controller(struct spdk_vhost_dev *vdev);
+struct vhost_poll_group *vhost_get_poll_group(struct spdk_cpuset *cpumask);
+void vhost_put_poll_group(struct vhost_poll_group *pg);
+
+int remove_vhost_controller(struct spdk_vhost_dev *vdev);
+
 
 #ifdef SPDK_CONFIG_VHOST_INTERNAL_LIB
-int spdk_vhost_nvme_admin_passthrough(int vid, void *cmd, void *cqe, void *buf);
-int spdk_vhost_nvme_set_cq_call(int vid, uint16_t qid, int fd);
-int spdk_vhost_nvme_set_bar_mr(int vid, void *bar_addr, uint64_t bar_size);
-int spdk_vhost_nvme_get_cap(int vid, uint64_t *cap);
-int spdk_vhost_nvme_controller_construct(void);
-int spdk_vhost_nvme_dev_construct(const char *name, const char *cpumask, uint32_t io_queues);
-int spdk_vhost_nvme_dev_remove(struct spdk_vhost_dev *vdev);
-int spdk_vhost_nvme_dev_add_ns(struct spdk_vhost_dev *vdev,
-			       const char *bdev_name);
+int vhost_nvme_admin_passthrough(int vid, void *cmd, void *cqe, void *buf);
+int vhost_nvme_set_cq_call(int vid, uint16_t qid, int fd);
+int vhost_nvme_set_bar_mr(int vid, void *bar_addr, uint64_t bar_size);
+int vhost_nvme_get_cap(int vid, uint64_t *cap);
+int vhost_nvme_controller_construct(void);
+int vhost_nvme_dev_construct(const char *name, const char *cpumask, uint32_t io_queues);
+int vhost_nvme_dev_remove(struct spdk_vhost_dev *vdev);
+int vhost_nvme_dev_add_ns(struct spdk_vhost_dev *vdev,
+			  const char *bdev_name);
 #endif
 
 #endif /* SPDK_VHOST_INTERNAL_H */
